@@ -106,6 +106,7 @@ async function refresh() {
   state.minStickers = data.minStickers;
   state.maxStickers = data.maxStickers;
   renderHome();
+  if (data.loadError) toast(data.loadError, 15000);
 }
 
 function el(tag, props = {}, children = []) {

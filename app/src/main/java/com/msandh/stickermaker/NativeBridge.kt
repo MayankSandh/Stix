@@ -100,6 +100,7 @@ class NativeBridge(
             .put("whatsAppInstalled", WhatsApp.anyInstalled(activity))
             .put("maxStickers", StickerRepository.MAX_STICKERS)
             .put("minStickers", StickerRepository.MIN_STICKERS)
+            .put("loadError", repo.loadError ?: JSONObject.NULL)
     }
 
     private fun JSONObject.name(): String {

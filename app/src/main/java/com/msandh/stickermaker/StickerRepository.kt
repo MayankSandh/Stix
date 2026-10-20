@@ -10,11 +10,16 @@ import android.graphics.RectF
 import android.net.Uri
 import android.os.Build
 import android.util.AtomicFile
+import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.OutputStream
 import java.util.UUID
+import java.util.zip.ZipEntry
+import java.util.zip.ZipFile
+import java.util.zip.ZipOutputStream
 import kotlin.math.max
 import kotlin.math.roundToInt
 
@@ -52,9 +57,23 @@ class StickerRepository private constructor(private val context: Context) {
         val stickers: MutableList<Sticker>,
     )
 
+    data class BackupSummary(val createdAt: Long, val packs: Int, val stickers: Int)
+
     val packsDir = File(context.filesDir, "packs").apply { mkdirs() }
     private val index = AtomicFile(File(context.filesDir, "packs.json"))
     private val packs = mutableListOf<Pack>()
+
+    /**
+     * Set when packs.json couldn't be read. While set, nothing is written, so a reading bug can
+     * never wipe the user's stickers.
+     */
+    @Volatile
+    var loadError: String? = null
+        private set
+
+    /** Called after every saved change (used to keep the backup file up to date). */
+    @Volatile
+    var onChanged: (() -> Unit)? = null
 
     init {
         load()
@@ -180,6 +199,90 @@ class StickerRepository private constructor(private val context: Context) {
         return File(File(packsDir, pack.id), name).takeIf { it.isFile }
     }
 
+    // ---- backup ----
+
+    /** Writes every pack and sticker into one zip. Holds the lock so the snapshot is consistent. */
+    @Synchronized
+    fun writeBackup(out: OutputStream) {
+        ZipOutputStream(out.buffered()).use { zip ->
+            fun put(name: String, bytes: ByteArray) {
+                zip.putNextEntry(ZipEntry(name))
+                zip.write(bytes)
+                zip.closeEntry()
+            }
+            val manifest = JSONObject()
+                .put("app", "Stix")
+                .put("format", BACKUP_FORMAT)
+                .put("createdAt", System.currentTimeMillis())
+                .put("packs", packs.size)
+                .put("stickers", packs.sumOf { it.stickers.size })
+            put(BACKUP_MANIFEST, manifest.toString().toByteArray(Charsets.UTF_8))
+            put(INDEX_NAME, indexJson().toString().toByteArray(Charsets.UTF_8))
+            for (pack in packs) {
+                val dir = File(packsDir, pack.id)
+                for (sticker in pack.stickers) {
+                    for (name in listOf(sticker.file, previewName(sticker.file))) {
+                        val file = File(dir, name)
+                        if (!file.isFile) continue
+                        zip.putNextEntry(ZipEntry("packs/${pack.id}/$name"))
+                        file.inputStream().use { it.copyTo(zip) }
+                        zip.closeEntry()
+                    }
+                }
+            }
+        }
+    }
+
+    /** Reads what a backup file contains, without changing anything. */
+    fun readBackupSummary(zipFile: File): BackupSummary {
+        ZipFile(zipFile).use { zip ->
+            val entry = zip.getEntry(BACKUP_MANIFEST) ?: throw IllegalArgumentException("This isn't a Stix backup file.")
+            val manifest = JSONObject(zip.getInputStream(entry).use { String(it.readBytes(), Charsets.UTF_8) })
+            require(manifest.optString("app") == "Stix") { "This isn't a Stix backup file." }
+            require(manifest.optInt("format") <= BACKUP_FORMAT) { "This backup was made by a newer Stix. Update the app first." }
+            return BackupSummary(manifest.optLong("createdAt"), manifest.optInt("packs"), manifest.optInt("stickers"))
+        }
+    }
+
+    /** Replaces all current packs with the ones in the backup. */
+    @Synchronized
+    fun restoreBackup(zipFile: File) {
+        readBackupSummary(zipFile)
+        val staging = File(context.filesDir, "restore-staging")
+        staging.deleteRecursively()
+        staging.mkdirs()
+        try {
+            ZipFile(zipFile).use { zip ->
+                for (entry in zip.entries()) {
+                    val name = entry.name
+                    if (entry.isDirectory || name.contains("..")) continue
+                    // Only expected paths are extracted; anything else (including path tricks) is ignored.
+                    if (name != INDEX_NAME && !BACKUP_FILE.matches(name)) continue
+                    val target = File(staging, name)
+                    target.parentFile?.mkdirs()
+                    zip.getInputStream(entry).use { input -> target.outputStream().use { input.copyTo(it) } }
+                }
+            }
+            val indexFile = File(staging, INDEX_NAME)
+            require(indexFile.isFile) { "This backup file is incomplete." }
+            val restored = parse(JSONObject(indexFile.readText(Charsets.UTF_8)))
+
+            packsDir.listFiles()?.forEach { it.deleteRecursively() }
+            File(staging, "packs").listFiles()?.forEach { dir -> dir.renameTo(File(packsDir, dir.name)) }
+            packs.clear()
+            packs.addAll(restored)
+            for (pack in packs) {
+                pack.stickers.removeAll { !File(File(packsDir, pack.id), it.file).isFile }
+                if (pack.stickers.isEmpty()) pack.animated = null
+                pack.version++ // make WhatsApp re-read packs it already knows
+                writeTray(pack)
+            }
+            save()
+        } finally {
+            staging.deleteRecursively()
+        }
+    }
+
     // ---- internals ----
 
     private fun find(id: String) = packs.firstOrNull { it.id == id }
@@ -214,34 +317,48 @@ class StickerRepository private constructor(private val context: Context) {
 
     private fun load() {
         if (!index.baseFile.exists()) return
-        val root = JSONObject(String(index.readFully(), Charsets.UTF_8))
-        val list = root.optJSONArray("packs") ?: return
-        for (i in 0 until list.length()) {
-            val p = list.getJSONObject(i)
-            val stickers = p.getJSONArray("stickers")
-            packs.add(
-                Pack(
-                    id = p.getString("id"),
-                    name = p.getString("name"),
-                    createdAt = p.getLong("createdAt"),
-                    version = p.getInt("version"),
-                    animated = if (p.has("animated")) p.getBoolean("animated") else null,
-                    stickers = MutableList(stickers.length()) { j ->
-                        val s = stickers.getJSONObject(j)
-                        val emojis = s.getJSONArray("emojis")
-                        Sticker(
-                            file = s.getString("file"),
-                            emojis = List(emojis.length()) { k -> emojis.getString(k) },
-                            createdAt = s.getLong("createdAt"),
-                        )
-                    },
-                ),
-            )
+        try {
+            packs.addAll(parse(JSONObject(String(index.readFully(), Charsets.UTF_8))))
+        } catch (e: Exception) {
+            Log.e("StickerRepository", "Could not read packs.json", e)
+            loadError = "Stix couldn't read your saved stickers (${e.message}). They haven't been changed. " +
+                "Please send a report so this can be fixed."
         }
     }
 
-    private fun save() {
-        val root = JSONObject().put("packs", JSONArray().apply {
+    private fun parse(root: JSONObject): List<Pack> {
+        val result = mutableListOf<Pack>()
+        val list = root.optJSONArray("packs") ?: return result
+        for (i in 0 until list.length()) {
+            val p = list.getJSONObject(i)
+            val stickers = p.optJSONArray("stickers") ?: JSONArray()
+            val pack = Pack(
+                id = p.getString("id"),
+                name = p.optString("name", "Stickers"),
+                createdAt = p.optLong("createdAt"),
+                version = p.optInt("version", 1),
+                // isNull() covers both a missing key and an explicit null ("kind not decided yet").
+                animated = if (p.isNull("animated")) null else p.optBoolean("animated"),
+                stickers = MutableList(stickers.length()) { j ->
+                    val s = stickers.getJSONObject(j)
+                    val emojis = s.optJSONArray("emojis") ?: JSONArray()
+                    Sticker(
+                        file = s.getString("file"),
+                        emojis = cleanEmojis(List(emojis.length()) { k -> emojis.optString(k) }),
+                        createdAt = s.optLong("createdAt"),
+                    )
+                },
+            )
+            // Packs saved before GIF support have no kind: work it out from the files.
+            if (pack.animated == null && pack.stickers.isNotEmpty()) {
+                pack.animated = File(File(packsDir, pack.id), previewName(pack.stickers.first().file)).exists()
+            }
+            result.add(pack)
+        }
+        return result
+    }
+
+    private fun indexJson(): JSONObject = JSONObject().put("packs", JSONArray().apply {
             for (pack in packs) {
                 put(JSONObject()
                     .put("id", pack.id)
@@ -259,6 +376,10 @@ class StickerRepository private constructor(private val context: Context) {
                     }))
             }
         })
+
+    private fun save() {
+        loadError?.let { throw IllegalStateException(it) }
+        val root = indexJson()
         val out = index.startWrite()
         try {
             out.write(root.toString().toByteArray(Charsets.UTF_8))
@@ -269,10 +390,15 @@ class StickerRepository private constructor(private val context: Context) {
         }
         // Tell WhatsApp (if it is watching) that pack data changed.
         context.contentResolver.notifyChange(METADATA_URI, null)
+        onChanged?.invoke()
     }
 
     companion object {
         const val TRAY_FILE = "tray.png"
+        private const val INDEX_NAME = "packs.json"
+        private const val BACKUP_MANIFEST = "stix-backup.json"
+        private const val BACKUP_FORMAT = 1
+        private val BACKUP_FILE = Regex("^packs/[A-Za-z0-9-]{1,64}/[A-Za-z0-9_.-]{1,100}$")
         const val MIN_STICKERS = 3
         const val MAX_STICKERS = 30
         private const val STICKER_SIZE = 512

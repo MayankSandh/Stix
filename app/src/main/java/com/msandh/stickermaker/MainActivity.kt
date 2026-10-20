@@ -1,6 +1,7 @@
 package com.msandh.stickermaker
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.ApplicationInfo
@@ -62,8 +63,39 @@ class MainActivity : ComponentActivity() {
         bridge.resolve(requestId, JSONObject().put("ok", status))
     }
 
+    private var pendingIntent: Intent? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val firstLaunch = savedInstanceState == null
+        val report = CrashReporter.takeReport(this)
+        if (report == null) {
+            setUp(firstLaunch)
+            return
+        }
+        // Show the report before starting anything that might crash again.
+        AlertDialog.Builder(this)
+            .setTitle(R.string.crash_title)
+            .setMessage(R.string.crash_message)
+            .setCancelable(false)
+            .setPositiveButton(R.string.crash_share) { _, _ ->
+                shareText(report)
+                setUp(firstLaunch)
+            }
+            .setNegativeButton(R.string.crash_continue) { _, _ -> setUp(firstLaunch) }
+            .show()
+    }
+
+    private fun shareText(text: String) {
+        val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text)
+        try {
+            startActivity(Intent.createChooser(send, getString(R.string.crash_share)))
+        } catch (e: ActivityNotFoundException) {
+            Log.w(TAG, "No app to share the report", e)
+        }
+    }
+
+    private fun setUp(firstLaunch: Boolean) {
         val repo = StickerRepository.get(this)
         sharedDir = File(cacheDir, "shared").apply { mkdirs() }
 
@@ -140,7 +172,8 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        if (savedInstanceState == null) receiveShare(intent)
+        if (firstLaunch) receiveShare(pendingIntent ?: intent)
+        pendingIntent = null
         // Fetch the magic cut-out model early; it only arrives on its own for Play Store installs.
         try {
             SubjectCutout.requestModelDownload(this)
@@ -152,11 +185,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        receiveShare(intent)
+        if (::bridge.isInitialized) receiveShare(intent) else pendingIntent = intent
     }
 
     override fun onDestroy() {
-        webView.destroy()
+        if (::webView.isInitialized) webView.destroy()
         super.onDestroy()
     }
 
