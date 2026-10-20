@@ -101,7 +101,7 @@ class StickerContentProvider : ContentProvider() {
         private const val METADATA = "metadata"
         private const val STICKERS = "stickers"
         private const val STICKERS_ASSET = "stickers_asset"
-        private const val PUBLISHER = "Sticker Maker"
+        private const val PUBLISHER = "Stix"
 
         private val PACK_COLUMNS = arrayOf(
             "sticker_pack_identifier",

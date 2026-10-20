@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "StickerMaker"
+rootProject.name = "Stix"
 include(":app")

@@ -11,7 +11,7 @@ window.__nativeResolve = (id, result) => {
 };
 
 export function call(method, args = {}) {
-  if (!window.Android) return Promise.reject(new Error('This only works inside the Sticker Maker app.'));
+  if (!window.Android) return Promise.reject(new Error('This only works inside the Stix app.'));
   return new Promise((resolve, reject) => {
     const id = `r${++seq}`;
     pending.set(id, { resolve, reject });

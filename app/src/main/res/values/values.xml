@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Sticker Maker</string>
+    <string name="app_name">Stix</string>
     <string name="add_to_whatsapp">Add to WhatsApp</string>
     <string name="no_image_shared">No image came through. Try sharing the image itself (long-press it → Share).</string>
     <string name="whatsapp_missing">WhatsApp isn\'t installed on this phone.</string>

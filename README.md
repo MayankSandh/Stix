@@ -1,8 +1,8 @@
-# Sticker Maker
+# Stix
 
 A free, ad-free Android app that turns any image into WhatsApp stickers and adds them to WhatsApp as real sticker packs.
 
-- **Share menu:** share an image from Chrome, Instagram, Gallery… to **Sticker Maker**, or pick one in the app.
+- **Share menu:** share an image from Chrome, Instagram, Gallery… to **Stix**, or pick one in the app.
 - **Crop:** free shape or locked square.
 - **Touch up:** an eraser brush removes background, a restore brush fixes mistakes, and there's undo/redo. Use two fingers to zoom and move.
 - **Export:** saved as 512×512 WebP with a transparent background, under 100 KB. Non-square crops get see-through padding.
@@ -22,7 +22,7 @@ A free, ad-free Android app that turns any image into WhatsApp stickers and adds
 
 ## One-time setup (personal GitHub account)
 
-1. **Create a repository** on your *personal* GitHub account, e.g. `StickerMaker` (private is fine).
+1. **Create a repository** on your *personal* GitHub account, e.g. `Stix` (private is fine).
 2. **Add the signing key as secrets.** Every build must be signed with the same key, or Android refuses to update the app.
    The key lives in `~/StickerMaker-signing/` (never commit it; back it up somewhere safe).
    In the repo: **Settings → Secrets and variables → Actions → New repository secret**, add:
@@ -38,7 +38,7 @@ A free, ad-free Android app that turns any image into WhatsApp stickers and adds
    ```sh
    cd ~/StickerMaker
    git branch -M main
-   git remote add origin https://YOUR_USERNAME@github.com/YOUR_USERNAME/StickerMaker.git
+   git remote add origin https://YOUR_USERNAME@github.com/YOUR_USERNAME/Stix.git
    git push -u origin main
    ```
    When asked for a password, paste a personal access token from your personal account
@@ -47,8 +47,8 @@ A free, ad-free Android app that turns any image into WhatsApp stickers and adds
 
 ## Install on your phone
 
-1. On the phone, open `https://github.com/YOUR_USERNAME/StickerMaker/releases/latest` (sign in if the repo is private).
-2. Tap **StickerMaker.apk**. Android asks you to allow installs from Chrome once. If Play Protect warns about an unknown app, choose **Install anyway**.
+1. On the phone, open `https://github.com/YOUR_USERNAME/Stix/releases/latest` (sign in if the repo is private).
+2. Tap **Stix.apk**. Android asks you to allow installs from Chrome once. If Play Protect warns about an unknown app, choose **Install anyway**.
 3. To update later, push changes, wait for the build, and repeat. Your stickers are kept.
 
 ## Developing

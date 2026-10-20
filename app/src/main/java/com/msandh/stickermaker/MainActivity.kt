@@ -221,7 +221,7 @@ class MainActivity : ComponentActivity() {
     }
 
     companion object {
-        private const val TAG = "StickerMaker"
+        private const val TAG = "Stix"
         private const val APP_HOST = "appassets.androidplatform.net"
         private const val START_URL = "https://$APP_HOST/assets/web/index.html"
     }
