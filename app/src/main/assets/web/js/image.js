@@ -1,6 +1,5 @@
 // Image loading and sticker export helpers.
 export const STICKER_SIZE = 512;
-export const MAX_STICKER_BYTES = 100 * 1024; // WhatsApp limit for static stickers
 const MARGIN = 16; // WhatsApp's recommended margin around the artwork
 const MAX_SOURCE_SIDE = 2048;
 const MAX_EDIT_SIDE = 1024;
@@ -85,33 +84,4 @@ export function makeSticker(source, { trim = true, margin = true } = {}) {
   ctx.imageSmoothingQuality = 'high';
   ctx.drawImage(source, bounds.x, bounds.y, bounds.w, bounds.h, (STICKER_SIZE - w) / 2, (STICKER_SIZE - h) / 2, w, h);
   return out;
-}
-
-function toBlob(canvas, type, quality) {
-  return new Promise((resolve, reject) => {
-    canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('Could not encode image'))), type, quality);
-  });
-}
-
-export function encodePng(canvas) {
-  return toBlob(canvas, 'image/png');
-}
-
-/** Encodes as WebP, lowering quality until it fits WhatsApp's 100 KB limit. */
-export async function encodeWebp(canvas) {
-  let blob;
-  for (const q of [0.92, 0.85, 0.78, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2]) {
-    blob = await toBlob(canvas, 'image/webp', q);
-    if (blob.type !== 'image/webp') throw new Error('This browser cannot create WebP images. Please use Chrome.');
-    if (blob.size <= MAX_STICKER_BYTES) return blob;
-  }
-  return blob;
-}
-
-export async function blobToCanvas(blob) {
-  const bitmap = await createImageBitmap(blob);
-  const canvas = makeCanvas(bitmap.width, bitmap.height);
-  canvas.getContext('2d').drawImage(bitmap, 0, 0);
-  bitmap.close();
-  return canvas;
 }

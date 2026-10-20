@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Sticker Maker</string>
+    <string name="add_to_whatsapp">Add to WhatsApp</string>
+    <string name="no_image_shared">No image came through. Try sharing the image itself (long-press it → Share).</string>
+    <string name="whatsapp_missing">WhatsApp isn\'t installed on this phone.</string>
+    <string name="whatsapp_update">Couldn\'t open WhatsApp. Please update WhatsApp and try again.</string>
+    <color name="background">#0B141A</color>
+    <color name="ic_launcher_background">#00A884</color>
+
+    <style name="AppTheme" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/background</item>
+        <item name="android:colorAccent">#00A884</item>
+    </style>
+</resources>

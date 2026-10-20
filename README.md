@@ -1,62 +1,58 @@
 # Sticker Maker
 
-A free, ad-free web app that turns any image into a WhatsApp sticker.
+A free, ad-free Android app that turns any image into WhatsApp stickers and adds them to WhatsApp as real sticker packs.
 
+- **Share menu:** share an image from Chrome, Instagram, Gallery… to **Sticker Maker**, or pick one in the app.
 - **Crop:** free shape or locked square.
-- **Touch up:** an eraser brush to remove background, a restore brush to fix mistakes, and undo/redo. Use two fingers to zoom and move.
-- **Export:** 512×512 with a transparent background. Non-square crops get see-through padding, and the WebP is kept under WhatsApp's 100 KB limit.
-- **Groups:** organise stickers into named groups (stored only in your browser).
-- **Share menu:** once installed, it appears in Android's **Share** menu, so you can send an image straight from Chrome, Instagram, the gallery, etc.
-- **Offline:** works offline after the first visit.
+- **Touch up:** an eraser brush removes background, a restore brush fixes mistakes, and there's undo/redo. Use two fingers to zoom and move.
+- **Export:** saved as 512×512 WebP with a transparent background, under 100 KB. Non-square crops get see-through padding.
+- **Groups = WhatsApp sticker packs:** once a group has 3+ stickers, tap **Add to WhatsApp**. Stickers you add later sync to WhatsApp automatically.
 
-Plain HTML, CSS and JavaScript, with no dependencies and no build step.
+## How it works
 
-## Run it on your computer
-
-```sh
-cd ~/StickerMaker
-python3 -m http.server 8765
-```
-
-Open http://localhost:8765. You can paste images with Ctrl/Cmd+V or drag and drop them.
-
-## Put it on your phone
-
-The Share-menu and install features need HTTPS, so host it somewhere free.
-
-**Vercel (free Hobby plan, for personal use)**
-- With the CLI: `npx vercel --prod` from this folder. Log in with your personal account and accept the defaults. There's nothing to build; it's a static site.
-- Or push this folder to a Git repo (GitHub, GitLab or Bitbucket) and import it at vercel.com/new.
-
-**No-tools alternative:** drag this folder onto https://app.netlify.com/drop.
-
-Then, on your Android phone:
-1. Open the URL in **Chrome**.
-2. Menu (⋮) → **Add to Home screen** / **Install app**.
-3. The app now shows up as **Stickers** in the Share menu.
-
-## Getting stickers into WhatsApp
-
-Browsers can't add named sticker packs to WhatsApp; only native Android apps can. So:
-
-1. Open a sticker → **Share to WhatsApp** → send it to a chat (e.g. “Message yourself”).
-2. If it arrives as a sticker, tap it → **Add to Favorites**.
-3. If it arrives as a photo instead, use **Save image to phone**, then in WhatsApp: sticker panel → **Create** → pick the saved image. It's already cropped, so WhatsApp's editor has nothing left to cut.
-
-## Notes
-
-- Stickers live in this browser's storage (IndexedDB) on this device. Clearing Chrome's site data for the app deletes them.
-- Adding `?debug` to the URL exposes internals on `window.__sm` (used by tests).
-- When you change files listed in `sw.js`, bump `CACHE` there so installed copies refresh their offline cache.
-
-## Files
-
-| File | Purpose |
+| Part | What it does |
 |---|---|
-| `index.html`, `css/style.css` | Screens and styling |
-| `js/app.js` | Screen flow, groups, sharing, saving |
-| `js/crop.js` | Crop box |
-| `js/brush.js` | Eraser/restore brush, undo, pinch zoom |
-| `js/image.js` | Loading, cropping, 512×512 fitting, WebP/PNG encoding |
-| `js/db.js` | IndexedDB storage |
-| `sw.js`, `manifest.webmanifest` | Offline support, install, Share-menu target |
+| `app/src/main/assets/web/` | The editor UI (HTML/CSS/JS) shown inside the app |
+| `MainActivity.kt` | Hosts the editor, receives shared images, opens WhatsApp |
+| `NativeBridge.kt` | Lets the editor save/list/move/delete stickers (`window.Android`) |
+| `StickerRepository.kt` | Stores packs in the app's private storage, makes WebP stickers and tray icons |
+| `StickerContentProvider.kt` | The interface WhatsApp reads packs from (format defined by [WhatsApp](https://github.com/WhatsApp/stickers)) |
+| `WhatsApp.kt` | Checks whether a pack is already in WhatsApp; builds the "add pack" request |
+| `.github/workflows/build.yml` | Builds the APK in the cloud on every push and publishes it as a GitHub Release |
+
+## One-time setup (personal GitHub account)
+
+1. **Create a repository** on your *personal* GitHub account, e.g. `StickerMaker` (private is fine).
+2. **Add the signing key as secrets.** Every build must be signed with the same key, or Android refuses to update the app.
+   The key lives in `~/StickerMaker-signing/` (never commit it; back it up somewhere safe).
+   In the repo: **Settings → Secrets and variables → Actions → New repository secret**, add:
+
+   | Secret name | Value |
+   |---|---|
+   | `SIGNING_KEYSTORE_BASE64` | contents of `~/StickerMaker-signing/release.jks.base64.txt` (`pbcopy < ~/StickerMaker-signing/release.jks.base64.txt`) |
+   | `SIGNING_STORE_PASSWORD` | from `~/StickerMaker-signing/passwords.txt` |
+   | `SIGNING_KEY_PASSWORD` | from `~/StickerMaker-signing/passwords.txt` |
+   | `SIGNING_KEY_ALIAS` | `stickermaker` |
+
+3. **Upload the code** (replace `YOUR_USERNAME`):
+   ```sh
+   cd ~/StickerMaker
+   git branch -M main
+   git remote add origin https://YOUR_USERNAME@github.com/YOUR_USERNAME/StickerMaker.git
+   git push -u origin main
+   ```
+   When asked for a password, paste a personal access token from your personal account
+   (GitHub → Settings → Developer settings → Fine-grained tokens, with Contents and Workflows read/write on this repo).
+4. Open the repo's **Actions** tab and wait for **Build APK** to turn green (~5 min).
+
+## Install on your phone
+
+1. On the phone, open `https://github.com/YOUR_USERNAME/StickerMaker/releases/latest` (sign in if the repo is private).
+2. Tap **StickerMaker.apk**. Android asks you to allow installs from Chrome once. If Play Protect warns about an unknown app, choose **Install anyway**.
+3. To update later, push changes, wait for the build, and repeat. Your stickers are kept.
+
+## Developing
+
+- The editor can be opened in desktop Chrome (`python3 -m http.server` in `app/src/main/assets/web`), but saving needs the Android app's `window.Android` bridge.
+- Adding `?debug` to the page URL exposes internals on `window.__sm` for tests.
+- Uninstalling the app deletes its stickers (Android's auto-backup may restore them on a new phone).

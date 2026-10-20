@@ -125,6 +125,16 @@ html, body {
 }
 .tile img { width: 100%; height: 100%; object-fit: contain; display: block; }
 .group-empty { color: var(--muted); font-size: 14px; margin: 0; }
+.pack-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 14px;
+}
+.pack-status .btn { padding: 8px 14px; font-size: 14px; }
+.pack-status .ok { color: var(--accent); font-weight: 600; }
 
 .empty {
   position: absolute;
@@ -212,7 +222,7 @@ html, body {
 .check input { width: 20px; height: 20px; accent-color: var(--accent); }
 .field { display: flex; align-items: center; gap: 10px; align-self: stretch; }
 .field span { color: var(--muted); }
-.field select, .sheet input[type=text] {
+.field select, .field input[type=text], .sheet input[type=text] {
   flex: 1;
   font: inherit;
   color: var(--text);
@@ -221,7 +231,8 @@ html, body {
   border-radius: 10px;
   padding: 10px;
 }
-.sheet input[type=text] { width: 100%; margin: 8px 0 16px; }
+#prompt-input { width: 100%; margin: 8px 0 16px; }
+.field input[type=text] { min-width: 0; font-size: 20px; }
 
 /* Dialogs */
 dialog.sheet {
@@ -253,6 +264,7 @@ dialog.sheet li { margin-bottom: 10px; }
   border-radius: 10px;
   font-size: 14px;
   z-index: 10;
+  pointer-events: none;
   box-shadow: 0 4px 16px rgba(0, 0, 0, .4);
 }
 
