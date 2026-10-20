@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0b141a">
+  <title>Sticker Maker</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <!-- Home: sticker groups -->
+  <section id="home" class="view">
+    <header class="topbar">
+      <h1>Sticker Maker</h1>
+      <button class="icon-btn" id="help-btn" aria-label="How to use">?</button>
+    </header>
+    <main id="groups" class="groups"></main>
+    <div id="empty" class="empty" hidden>
+      <p class="big">No stickers yet</p>
+      <p>Tap <b>New sticker</b> to pick an image, or share an image to this app from any other app.</p>
+    </div>
+    <div class="fab-row">
+      <button class="btn secondary" id="new-group-btn">New group</button>
+      <button class="btn primary fab" id="new-sticker-btn">+ New sticker</button>
+    </div>
+    <input type="file" id="file-input" accept="image/*" hidden>
+  </section>
+
+  <!-- Editor -->
+  <section id="editor" class="view" hidden>
+    <!-- Step 1: crop -->
+    <div id="step-crop" class="step">
+      <header class="topbar">
+        <button class="btn text" data-action="cancel">Cancel</button>
+        <h2>Crop</h2>
+        <button class="btn text strong" id="crop-next">Next</button>
+      </header>
+      <div class="stage" id="crop-stage"><canvas id="crop-canvas"></canvas></div>
+      <footer class="toolbar">
+        <div class="segmented" role="group" aria-label="Crop shape">
+          <button data-crop-mode="free" class="active">Free</button>
+          <button data-crop-mode="square">Square</button>
+        </div>
+        <button class="btn text" id="crop-reset">Reset</button>
+      </footer>
+    </div>
+
+    <!-- Step 2: touch up -->
+    <div id="step-brush" class="step" hidden>
+      <header class="topbar">
+        <button class="btn text" id="brush-back">Back</button>
+        <h2>Touch up</h2>
+        <button class="btn text strong" id="brush-next">Next</button>
+      </header>
+      <div class="stage" id="brush-stage"><canvas id="brush-canvas"></canvas></div>
+      <footer class="toolbar column">
+        <div class="row">
+          <div class="segmented" role="group" aria-label="Brush">
+            <button data-brush-mode="erase" class="active">Erase</button>
+            <button data-brush-mode="restore">Restore</button>
+          </div>
+          <button class="icon-btn" id="undo-btn" aria-label="Undo" disabled>&#8630;</button>
+          <button class="icon-btn" id="redo-btn" aria-label="Redo" disabled>&#8631;</button>
+          <button class="icon-btn" id="fit-btn" aria-label="Fit to screen">&#9974;</button>
+        </div>
+        <label class="row slider">
+          <span>Brush</span>
+          <input type="range" id="brush-size" min="6" max="140" value="40">
+        </label>
+        <p class="hint">One finger paints. Two fingers zoom and move.</p>
+      </footer>
+    </div>
+
+    <!-- Step 3: save -->
+    <div id="step-save" class="step" hidden>
+      <header class="topbar">
+        <button class="btn text" id="save-back">Back</button>
+        <h2>Save</h2>
+        <span class="spacer"></span>
+      </header>
+      <div class="save-body">
+        <div class="preview-wrap" id="preview-wrap">
+          <canvas id="preview-canvas" width="512" height="512"></canvas>
+        </div>
+        <div class="segmented small" role="group" aria-label="Preview background">
+          <button data-preview-bg="checker" class="active">Transparent</button>
+          <button data-preview-bg="dark">Dark chat</button>
+          <button data-preview-bg="light">Light chat</button>
+        </div>
+        <label class="check"><input type="checkbox" id="opt-trim" checked> Trim empty edges</label>
+        <label class="check"><input type="checkbox" id="opt-margin" checked> Small margin (WhatsApp recommends it)</label>
+        <label class="field">
+          <span>Group</span>
+          <select id="group-select"></select>
+        </label>
+        <p class="hint" id="size-info"></p>
+        <button class="btn primary wide" id="save-btn">Save sticker</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Sticker actions -->
+  <dialog id="sticker-dialog" class="sheet">
+    <div class="preview-wrap checker"><img id="sticker-img" alt="Sticker preview"></div>
+    <div class="sheet-actions">
+      <button class="btn primary wide" id="share-btn">Share to WhatsApp</button>
+      <button class="btn secondary wide" id="download-btn">Save image to phone</button>
+      <label class="field">
+        <span>Group</span>
+        <select id="move-select"></select>
+      </label>
+      <div class="row">
+        <button class="btn danger" id="delete-sticker-btn">Delete</button>
+        <span class="spacer"></span>
+        <button class="btn text" data-close>Close</button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Text prompt -->
+  <dialog id="prompt-dialog" class="sheet small">
+    <form method="dialog">
+      <h3 id="prompt-title"></h3>
+      <input type="text" id="prompt-input" maxlength="60" autocomplete="off">
+      <div class="row">
+        <span class="spacer"></span>
+        <button class="btn text" value="cancel" formnovalidate>Cancel</button>
+        <button class="btn primary" value="ok">OK</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Confirm -->
+  <dialog id="confirm-dialog" class="sheet small">
+    <form method="dialog">
+      <p id="confirm-text"></p>
+      <div class="row">
+        <span class="spacer"></span>
+        <button class="btn text" value="cancel">Cancel</button>
+        <button class="btn danger" value="ok">Delete</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Help -->
+  <dialog id="help-dialog" class="sheet">
+    <h3>How to use</h3>
+    <ol>
+      <li><b>Install the app:</b> in Chrome, open the menu (&#8942;) and choose <i>Add to Home screen</i> / <i>Install app</i>. After that, it appears in the <b>Share</b> menu of other apps.</li>
+      <li><b>Make a sticker:</b> share an image to <i>Stickers</i>, or tap <b>New sticker</b>. Crop it, erase the background if you like, and save it to a group.</li>
+      <li><b>Put it in WhatsApp:</b> open a sticker and tap <b>Share to WhatsApp</b>, then send it to a chat (try “Message yourself”). If it arrives as a sticker, tap it and choose <i>Add to Favorites</i>.</li>
+      <li><b>If it arrives as a photo instead:</b> tap <b>Save image to phone</b>, then in WhatsApp open the sticker panel, tap <i>Create</i>, and pick the saved image.</li>
+    </ol>
+    <p class="hint">Your stickers are stored only in this browser on this phone. Clearing Chrome's site data deletes them.</p>
+    <div class="row"><span class="spacer"></span><button class="btn primary" data-close>Got it</button></div>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" popover="manual"></div>
+  <div id="busy" class="busy" hidden><div class="spinner"></div></div>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
