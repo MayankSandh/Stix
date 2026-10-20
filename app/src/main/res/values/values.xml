@@ -2,6 +2,7 @@
 <resources>
     <string name="app_name">Stix</string>
     <string name="add_to_whatsapp">Add to WhatsApp</string>
+    <string name="downloading">Getting it from the link…</string>
     <string name="no_image_shared">No image came through. Try sharing the image itself (long-press it → Share).</string>
     <string name="whatsapp_missing">WhatsApp isn\'t installed on this phone.</string>
     <string name="whatsapp_update">Couldn\'t open WhatsApp. Please update WhatsApp and try again.</string>

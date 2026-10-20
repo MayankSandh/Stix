@@ -12,18 +12,19 @@
   <section id="home" class="view">
     <header class="topbar">
       <h1>Stix</h1>
+      <button class="icon-btn" id="link-btn" aria-label="Make a sticker from a link">🔗</button>
       <button class="icon-btn" id="help-btn" aria-label="How to use">?</button>
     </header>
     <main id="groups" class="groups"></main>
     <div id="empty" class="empty" hidden>
       <p class="big">No stickers yet</p>
-      <p>Tap <b>New sticker</b> to pick an image, or share an image to <i>Stix</i> from any other app.</p>
+      <p>Tap <b>New sticker</b> to pick an image or GIF, share one to <i>Stix</i> from any app, or tap 🔗 to paste a link.</p>
     </div>
     <div class="fab-row">
       <button class="btn secondary" id="new-group-btn">New group</button>
       <button class="btn primary fab" id="new-sticker-btn">+ New sticker</button>
     </div>
-    <input type="file" id="file-input" accept="image/*" hidden>
+    <input type="file" id="file-input" accept="image/*,video/*" hidden>
   </section>
 
   <!-- Editor -->
@@ -61,13 +62,14 @@
           </div>
           <button class="icon-btn" id="undo-btn" aria-label="Undo" disabled>&#8630;</button>
           <button class="icon-btn" id="redo-btn" aria-label="Redo" disabled>&#8631;</button>
-          <button class="icon-btn" id="fit-btn" aria-label="Fit to screen">&#9974;</button>
+          <button class="btn text" id="fit-btn" disabled>Fit</button>
         </div>
+        <button class="btn secondary wide" id="magic-btn">✨ Magic cut-out</button>
         <label class="row slider">
           <span>Brush</span>
           <input type="range" id="brush-size" min="6" max="140" value="40">
         </label>
-        <p class="hint">One finger paints. Two fingers zoom and move.</p>
+        <p class="hint">Magic cut-out keeps the main subject. One finger paints, two fingers zoom and move.</p>
       </footer>
     </div>
 
@@ -87,7 +89,7 @@
           <button data-preview-bg="dark">Dark chat</button>
           <button data-preview-bg="light">Light chat</button>
         </div>
-        <label class="check"><input type="checkbox" id="opt-trim" checked> Trim empty edges</label>
+        <label class="check" id="opt-trim-row"><input type="checkbox" id="opt-trim" checked> Trim empty edges</label>
         <label class="check"><input type="checkbox" id="opt-margin" checked> Small margin (WhatsApp recommends it)</label>
         <label class="field">
           <span>Emojis</span>
@@ -128,7 +130,7 @@
   <dialog id="prompt-dialog" class="sheet small">
     <form method="dialog">
       <h3 id="prompt-title"></h3>
-      <input type="text" id="prompt-input" maxlength="60" autocomplete="off">
+      <input type="text" id="prompt-input" autocomplete="off">
       <div class="row">
         <span class="spacer"></span>
         <button class="btn text" value="cancel" formnovalidate>Cancel</button>
@@ -154,6 +156,7 @@
     <h3>How to use</h3>
     <ol>
       <li><b>Make a sticker:</b> tap <b>New sticker</b>, or share an image to <i>Stix</i> from any app (Chrome, Instagram, Gallery…). Crop it, erase the background if you like, and save it to a group.</li>
+      <li><b>GIF stickers:</b> share a GIF (or a link to one, e.g. from Google Images, Tenor or Giphy) to <i>Stix</i>, or tap 🔗 and paste the link. Crop it and save it to a GIF group. WhatsApp keeps animated and still stickers in separate packs.</li>
       <li><b>Groups are sticker packs:</b> once a group has at least 3 stickers, tap <b>Add to WhatsApp</b>. The pack then shows up in WhatsApp's sticker panel.</li>
       <li><b>Changes sync:</b> stickers you add to a pack later appear in WhatsApp automatically (it can take a moment, or reopen the sticker panel).</li>
     </ol>
@@ -162,7 +165,7 @@
   </dialog>
 
   <div id="toast" class="toast" role="status" popover="manual"></div>
-  <div id="busy" class="busy" hidden><div class="spinner"></div></div>
+  <div id="busy" class="busy" hidden><div class="spinner"></div><div class="busy-text" id="busy-text"></div></div>
 
   <script type="module" src="js/app.js"></script>
 </body>

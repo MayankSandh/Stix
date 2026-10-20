@@ -21,8 +21,12 @@ import kotlin.math.roundToInt
 /**
  * Stores sticker packs in the app's private storage:
  *   files/packs.json              pack names, sticker order and emojis
- *   files/packs/<packId>/<name>.webp  512x512 stickers (<= 100 KB each)
+ *   files/packs/<packId>/<name>.webp  512x512 stickers (still <= 100 KB, animated <= 500 KB)
+ *   files/packs/<packId>/<name>.png   first frame of an animated sticker (used for the tray icon)
  *   files/packs/<packId>/tray.png 96x96 pack icon shown in WhatsApp's sticker tray
+ *
+ * WhatsApp doesn't allow still and animated stickers in the same pack, so a pack's kind is
+ * fixed by its first sticker and reset when it becomes empty.
  */
 class StickerRepository private constructor(private val context: Context) {
 
@@ -32,6 +36,8 @@ class StickerRepository private constructor(private val context: Context) {
         val id: String,
         val name: String,
         val version: Int,
+        /** null while the pack is empty */
+        val animated: Boolean?,
         val stickers: List<StickerInfo>,
     )
 
@@ -42,6 +48,7 @@ class StickerRepository private constructor(private val context: Context) {
         var name: String,
         val createdAt: Long,
         var version: Int,
+        var animated: Boolean?,
         val stickers: MutableList<Sticker>,
     )
 
@@ -61,7 +68,7 @@ class StickerRepository private constructor(private val context: Context) {
 
     @Synchronized
     fun createPack(name: String): PackInfo {
-        val pack = Pack(UUID.randomUUID().toString(), name, System.currentTimeMillis(), 1, mutableListOf())
+        val pack = Pack(UUID.randomUUID().toString(), name, System.currentTimeMillis(), 1, null, mutableListOf())
         packs.add(pack)
         save()
         return pack.info()
@@ -88,15 +95,33 @@ class StickerRepository private constructor(private val context: Context) {
         val webp = encodeSticker(png) // slow part, done outside the lock
         synchronized(this) {
             val pack = packOrThrow(packId)
-            check(pack.stickers.size < MAX_STICKERS) { "This group already has $MAX_STICKERS stickers, the most WhatsApp allows." }
-            val name = "s${System.currentTimeMillis()}_${UUID.randomUUID().toString().take(6)}.webp"
-            val dir = File(packsDir, pack.id).apply { mkdirs() }
-            File(dir, name).writeBytes(webp)
-            val sticker = Sticker(name, cleanEmojis(emojis), System.currentTimeMillis())
-            pack.stickers.add(sticker)
-            changed(pack)
-            return StickerInfo(sticker.file, sticker.emojis)
+            check(pack.animated != true) { "“${pack.name}” is a GIF pack. Save still stickers to another group." }
+            return insert(pack, webp, null, emojis, animated = false)
         }
+    }
+
+    /** Stores an animated WebP made by the editor, plus a PNG of its first frame for the tray icon. */
+    fun addAnimatedSticker(packId: String, webp: ByteArray, previewPng: ByteArray, emojis: List<String>): StickerInfo {
+        validateAnimatedWebp(webp)
+        requireNotNull(BitmapFactory.decodeByteArray(previewPng, 0, previewPng.size)) { "Could not read the preview image" }
+        synchronized(this) {
+            val pack = packOrThrow(packId)
+            check(pack.animated != false) { "“${pack.name}” has still stickers. Save GIF stickers to another group." }
+            return insert(pack, webp, previewPng, emojis, animated = true)
+        }
+    }
+
+    private fun insert(pack: Pack, webp: ByteArray, previewPng: ByteArray?, emojis: List<String>, animated: Boolean): StickerInfo {
+        check(pack.stickers.size < MAX_STICKERS) { "This group already has $MAX_STICKERS stickers, the most WhatsApp allows." }
+        val name = "s${System.currentTimeMillis()}_${UUID.randomUUID().toString().take(6)}.webp"
+        val dir = File(packsDir, pack.id).apply { mkdirs() }
+        File(dir, name).writeBytes(webp)
+        if (previewPng != null) File(dir, previewName(name)).writeBytes(previewPng)
+        val sticker = Sticker(name, cleanEmojis(emojis), System.currentTimeMillis())
+        pack.stickers.add(sticker)
+        pack.animated = animated
+        changed(pack)
+        return StickerInfo(sticker.file, sticker.emojis)
     }
 
     @Synchronized
@@ -114,15 +139,23 @@ class StickerRepository private constructor(private val context: Context) {
         val from = packOrThrow(packId)
         val to = packOrThrow(toPackId)
         check(to.stickers.size < MAX_STICKERS) { "“${to.name}” already has $MAX_STICKERS stickers." }
+        check(to.animated == null || to.animated == from.animated) { "GIF and still stickers can't share a pack in WhatsApp." }
         val sticker = from.stickers.firstOrNull { it.file == file } ?: throw IllegalArgumentException("Sticker not found")
-        val target = File(File(packsDir, to.id).apply { mkdirs() }, file)
-        val source = File(File(packsDir, from.id), file)
-        if (!source.renameTo(target)) {
-            source.copyTo(target, overwrite = true)
-            source.delete()
+        val toDir = File(packsDir, to.id).apply { mkdirs() }
+        val fromDir = File(packsDir, from.id)
+        for (name in listOf(file, previewName(file))) {
+            val source = File(fromDir, name)
+            if (!source.exists()) continue
+            val target = File(toDir, name)
+            if (!source.renameTo(target)) {
+                source.copyTo(target, overwrite = true)
+                source.delete()
+            }
         }
         from.stickers.remove(sticker)
         to.stickers.add(sticker)
+        to.animated = from.animated
+        if (from.stickers.isEmpty()) from.animated = null
         changed(from, save = false)
         changed(to)
     }
@@ -132,6 +165,8 @@ class StickerRepository private constructor(private val context: Context) {
         val pack = packOrThrow(packId)
         if (pack.stickers.removeAll { it.file == file }) {
             File(File(packsDir, pack.id), file).delete()
+            File(File(packsDir, pack.id), previewName(file)).delete()
+            if (pack.stickers.isEmpty()) pack.animated = null
             changed(pack)
         }
     }
@@ -151,7 +186,9 @@ class StickerRepository private constructor(private val context: Context) {
 
     private fun packOrThrow(id: String) = find(id) ?: throw IllegalArgumentException("Group not found")
 
-    private fun Pack.info() = PackInfo(id, name, version, stickers.map { StickerInfo(it.file, it.emojis) })
+    private fun Pack.info() = PackInfo(id, name, version, animated, stickers.map { StickerInfo(it.file, it.emojis) })
+
+    private fun previewName(file: String) = file.removeSuffix(".webp") + ".png"
 
     /** Bumps the version so WhatsApp re-reads the pack, refreshes the tray icon and saves. */
     private fun changed(pack: Pack, save: Boolean = true) {
@@ -168,7 +205,9 @@ class StickerRepository private constructor(private val context: Context) {
             tray.delete()
             return
         }
-        val bitmap = BitmapFactory.decodeFile(File(dir, first.file).path) ?: return
+        val preview = File(dir, previewName(first.file))
+        val source = if (preview.exists()) preview else File(dir, first.file)
+        val bitmap = BitmapFactory.decodeFile(source.path) ?: return
         val icon = Bitmap.createScaledBitmap(bitmap, TRAY_SIZE, TRAY_SIZE, true)
         tray.outputStream().use { icon.compress(Bitmap.CompressFormat.PNG, 100, it) }
     }
@@ -186,6 +225,7 @@ class StickerRepository private constructor(private val context: Context) {
                     name = p.getString("name"),
                     createdAt = p.getLong("createdAt"),
                     version = p.getInt("version"),
+                    animated = if (p.has("animated")) p.getBoolean("animated") else null,
                     stickers = MutableList(stickers.length()) { j ->
                         val s = stickers.getJSONObject(j)
                         val emojis = s.getJSONArray("emojis")
@@ -208,6 +248,7 @@ class StickerRepository private constructor(private val context: Context) {
                     .put("name", pack.name)
                     .put("createdAt", pack.createdAt)
                     .put("version", pack.version)
+                    .put("animated", pack.animated ?: JSONObject.NULL)
                     .put("stickers", JSONArray().apply {
                         for (s in pack.stickers) {
                             put(JSONObject()
@@ -237,6 +278,7 @@ class StickerRepository private constructor(private val context: Context) {
         private const val STICKER_SIZE = 512
         private const val TRAY_SIZE = 96
         private const val MAX_STICKER_BYTES = 100 * 1024
+        private const val MAX_ANIMATED_BYTES = 500 * 1024
         private const val DEFAULT_EMOJI = "😀"
 
         val METADATA_URI: Uri = Uri.Builder()
@@ -271,6 +313,16 @@ class StickerRepository private constructor(private val context: Context) {
                 if (out.size() <= MAX_STICKER_BYTES) return out.toByteArray()
             }
             throw IllegalStateException("Could not make the sticker small enough for WhatsApp")
+        }
+
+        /** Checks the WhatsApp rules we can verify cheaply: size, WebP container, animation flag, 512x512. */
+        private fun validateAnimatedWebp(bytes: ByteArray) {
+            require(bytes.size <= MAX_ANIMATED_BYTES) { "GIF sticker is larger than WhatsApp's 500 KB limit" }
+            fun fourcc(at: Int) = String(bytes, at, 4, Charsets.US_ASCII)
+            fun u24(at: Int) = (bytes[at].toInt() and 0xFF) or ((bytes[at + 1].toInt() and 0xFF) shl 8) or ((bytes[at + 2].toInt() and 0xFF) shl 16)
+            require(bytes.size > 30 && fourcc(0) == "RIFF" && fourcc(8) == "WEBP" && fourcc(12) == "VP8X") { "Not an animated WebP" }
+            require(bytes[20].toInt() and 0x02 != 0) { "WebP is not animated" }
+            require(u24(24) + 1 == STICKER_SIZE && u24(27) + 1 == STICKER_SIZE) { "GIF sticker must be 512x512" }
         }
 
         private fun fitTo512(src: Bitmap): Bitmap {

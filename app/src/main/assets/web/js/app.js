@@ -2,6 +2,7 @@ import { call } from './native.js';
 import { CropTool } from './crop.js';
 import { BrushEditor } from './brush.js';
 import { loadImage, cropImage, makeSticker } from './image.js';
+import { decodeAnimation, releaseAnimation, firstFrameCanvas, contentRect, drawStickerFrame, encodeAnimatedSticker } from './animated.js';
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => [...document.querySelectorAll(sel)];
@@ -9,6 +10,7 @@ const $$ = (sel) => [...document.querySelectorAll(sel)];
 const DEFAULT_GROUP = '__default';
 const NEW_GROUP = '__new';
 const LAST_GROUP_KEY = 'lastGroupId';
+const LAST_GIF_GROUP_KEY = 'lastGifGroupId';
 
 const state = {
   packs: [],
@@ -16,9 +18,14 @@ const state = {
   minStickers: 3,
   maxStickers: 30,
   // editor
-  source: null,
+  source: null, // original image
+  edited: null, // same size as source, with erasing applied (kept when re-cropping)
+  step: null,
   cropKey: null,
+  cropRect: null,
   stickerCanvas: null,
+  anim: null, // { frames, width, height } when editing a GIF / video
+  previewTimer: null,
   depth: 0,
   afterHome: null,
   // sticker dialog
@@ -38,19 +45,22 @@ function toast(message, ms = 3000) {
   toastTimer = setTimeout(() => el.hidePopover(), ms);
 }
 
-async function withBusy(fn) {
+async function withBusy(fn, text = '') {
+  $('#busy-text').textContent = text;
   $('#busy').hidden = false;
   try {
-    return await fn();
+    return await fn((t) => { $('#busy-text').textContent = t; });
   } finally {
     $('#busy').hidden = true;
   }
 }
 
-function askText(title, initial = '') {
+function askText(title, initial = '', { maxLength = 60, placeholder = '' } = {}) {
   const dialog = $('#prompt-dialog');
   const input = $('#prompt-input');
   $('#prompt-title').textContent = title;
+  input.maxLength = maxLength;
+  input.placeholder = placeholder;
   input.value = initial;
   dialog.returnValue = '';
   dialog.showModal();
@@ -116,6 +126,7 @@ function renderHome() {
     const del = el('button', { className: 'icon-btn', textContent: '🗑', onclick: () => deleteGroup(pack) });
     del.setAttribute('aria-label', `Delete ${pack.name}`);
     const title = el('h3', { textContent: `${pack.name} ` }, [el('span', { className: 'count', textContent: `${count}/${state.maxStickers}` })]);
+    if (pack.animated) title.append(el('span', { className: 'badge', textContent: 'GIF' }));
     const section = el('section', { className: 'group' }, [el('div', { className: 'group-head' }, [title, rename, del])]);
 
     if (count) {
@@ -171,7 +182,7 @@ async function addToWhatsApp(pack, btn) {
   }
 }
 
-async function newGroup() {
+async function newGroup() { // a group becomes a still or GIF pack with its first sticker
   const name = await askText('New group name');
   if (!name) return null;
   const { id } = await call('createPack', { name });
@@ -198,10 +209,20 @@ async function deleteGroup(pack) {
 
 // ---------- sticker dialog ----------
 
-function fillGroupSelect(select, selectedId, { allowNew, currentId = null }) {
+/** Packs a sticker of this kind may go in: same kind, or still empty (kind not decided yet). */
+function packsFor(animated) {
+  return state.packs.filter((p) => p.animated === null || p.animated === undefined || p.animated === animated);
+}
+
+function defaultGroupName(animated) {
+  return animated ? 'My GIF stickers' : 'My stickers';
+}
+
+function fillGroupSelect(select, selectedId, { allowNew, currentId = null, animated = false }) {
   select.replaceChildren();
-  if (!state.packs.length) select.append(new Option('My stickers', DEFAULT_GROUP));
-  for (const p of state.packs) {
+  const packs = packsFor(animated);
+  if (!packs.length) select.append(new Option(defaultGroupName(animated), DEFAULT_GROUP));
+  for (const p of packs) {
     const full = p.stickers.length >= state.maxStickers && p.id !== currentId;
     const option = new Option(full ? `${p.name} (full)` : p.name, p.id);
     option.disabled = full;
@@ -217,7 +238,7 @@ function openStickerDialog(pack, sticker) {
   state.open = { pack, sticker };
   $('#sticker-img').src = sticker.url;
   $('#sticker-emoji').value = sticker.emojis.join('');
-  fillGroupSelect($('#move-select'), pack.id, { allowNew: false, currentId: pack.id });
+  fillGroupSelect($('#move-select'), pack.id, { allowNew: false, currentId: pack.id, animated: !!pack.animated });
   $('#sticker-dialog').showModal();
 }
 
@@ -270,35 +291,78 @@ const brush = new BrushEditor($('#brush-canvas'), {
     $('#undo-btn').disabled = !brush.canUndo();
     $('#redo-btn').disabled = !brush.canRedo();
   },
+  onViewChange: (zoomed) => {
+    $('#fit-btn').disabled = !zoomed;
+  },
 });
 
+function copyCanvas(src) {
+  const c = document.createElement('canvas');
+  c.width = src.width;
+  c.height = src.height;
+  c.getContext('2d').drawImage(src, 0, 0);
+  return c;
+}
+
+/** Writes touch-up edits back into the full image so re-cropping keeps them. */
+function commitBrushEdits() {
+  if (!brush.dirty || !state.cropRect || !state.edited) return;
+  const { x, y, w, h } = state.cropRect;
+  const ctx = state.edited.getContext('2d');
+  ctx.clearRect(x, y, w, h);
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(brush.getResult(), x, y, w, h);
+  brush.dirty = false;
+  cropTool.refresh();
+}
+
 function showStep(step) {
+  if (state.step === 'brush' && step === 'crop') commitBrushEdits();
+  state.step = step;
+  stopAnimatedPreview();
   for (const name of ['crop', 'brush', 'save']) $(`#step-${name}`).hidden = name !== step;
   if (step === 'save') {
-    fillGroupSelect($('#group-select'), localStorage.getItem(LAST_GROUP_KEY), { allowNew: true });
+    const animated = !!state.anim;
+    $('#opt-trim-row').hidden = animated;
+    fillGroupSelect($('#group-select'), localStorage.getItem(animated ? LAST_GIF_GROUP_KEY : LAST_GROUP_KEY), { allowNew: true, animated });
     renderPreview();
   }
 }
 
 function pushStep(step) {
   state.depth += 1;
-  history.pushState({ step }, '');
+  history.pushState({ step, depth: state.depth }, '');
   showStep(step);
 }
 
 async function openEditor(blob) {
+  releaseAnimation(state.anim);
+  state.anim = null;
   try {
-    state.source = await withBusy(() => loadImage(blob));
+    await withBusy(async () => {
+      state.anim = await decodeAnimation(blob).catch((err) => {
+        if (blob.type.startsWith('video/')) throw err;
+        return null; // fall back to a still image
+      });
+      state.source = state.anim ? firstFrameCanvas(state.anim) : await loadImage(blob);
+    }, 'Opening…');
   } catch (err) {
     toast(errorMessage(err));
     return;
   }
+  if (state.anim) {
+    const seconds = state.anim.frames.reduce((t, f) => t + f.duration, 0) / 1000;
+    toast(`GIF: ${state.anim.frames.length} frames, ${seconds.toFixed(1)} s. Crop it, then save.`, 3500);
+  }
+  state.edited = copyCanvas(state.source);
   state.cropKey = null;
+  state.cropRect = null;
+  state.step = null;
   $('#home').hidden = true;
   $('#editor').hidden = false;
   state.depth = 0;
   pushStep('crop');
-  cropTool.setImage(state.source);
+  cropTool.setImage(state.edited);
 }
 
 function closeEditor(afterHome) {
@@ -311,8 +375,13 @@ function closeEditor(afterHome) {
 }
 
 function showHome() {
+  stopAnimatedPreview();
+  releaseAnimation(state.anim);
+  state.anim = null;
   state.depth = 0;
   state.source = null;
+  state.edited = null;
+  state.step = null;
   $('#editor').hidden = true;
   $('#home').hidden = false;
   const after = state.afterHome;
@@ -323,7 +392,7 @@ function showHome() {
 window.addEventListener('popstate', (e) => {
   const step = e.state && e.state.step;
   if (step && state.source) {
-    state.depth = ['crop', 'brush', 'save'].indexOf(step) + 1;
+    state.depth = e.state.depth;
     showStep(step);
   } else {
     showHome();
@@ -346,19 +415,70 @@ window.handleBack = () => {
 
 function goToBrush() {
   const crop = cropTool.getCrop();
+  if (state.anim) {
+    // Erasing works on single images; GIFs go straight from crop to save.
+    state.cropRect = crop;
+    pushStep('save');
+    return;
+  }
   const key = JSON.stringify(crop);
   if (key !== state.cropKey) {
     state.cropKey = key;
-    brush.setImage(cropImage(state.source, crop));
+    state.cropRect = crop;
+    brush.setImage(cropImage(state.source, crop), cropImage(state.edited, crop));
   }
   pushStep('brush');
+}
+
+/** On-device subject detection (ML Kit) on the cropped area; result can be fine-tuned with the brushes. */
+async function magicCutout() {
+  const btn = $('#magic-btn');
+  btn.disabled = true;
+  try {
+    const image = brush.original.toDataURL('image/jpeg', 0.92);
+    const maskUrl = await withBusy(() => call('segmentSubject', { image }));
+    const mask = await createImageBitmap(await (await fetch(maskUrl)).blob());
+    brush.applyMask(mask);
+    toast('Done. Use Erase / Restore to fine-tune the edges.', 4000);
+  } catch (err) {
+    toast(errorMessage(err), 6000);
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 function previewOptions() {
   return { trim: $('#opt-trim').checked, margin: $('#opt-margin').checked };
 }
 
+function stopAnimatedPreview() {
+  clearTimeout(state.previewTimer);
+  state.previewTimer = null;
+}
+
+function renderAnimatedPreview() {
+  const ctx = $('#preview-canvas').getContext('2d');
+  const crop = state.cropRect;
+  const rect = contentRect(crop, { margin: $('#opt-margin').checked });
+  const frames = state.anim.frames;
+  const seconds = frames.reduce((t, f) => t + f.duration, 0) / 1000;
+  $('#size-info').textContent = `GIF sticker · ${frames.length} frames · ${seconds.toFixed(1)} s (WhatsApp allows up to 10 s)`;
+  $('#save-btn').disabled = false;
+  let i = 0;
+  const tick = () => {
+    drawStickerFrame(ctx, frames[i], crop, rect);
+    state.previewTimer = setTimeout(tick, frames[i].duration);
+    i = (i + 1) % frames.length;
+  };
+  tick();
+}
+
 function renderPreview() {
+  stopAnimatedPreview();
+  if (state.anim) {
+    renderAnimatedPreview();
+    return;
+  }
   const canvas = $('#preview-canvas');
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -376,13 +496,13 @@ function renderPreview() {
 }
 
 async function resolveGroupId(select) {
-  if (select.value === DEFAULT_GROUP) return (await call('createPack', { name: 'My stickers' })).id;
+  if (select.value === DEFAULT_GROUP) return (await call('createPack', { name: defaultGroupName(!!state.anim) })).id;
   if (select.value === NEW_GROUP) return newGroup();
   return select.value;
 }
 
 async function saveSticker() {
-  if (!state.stickerCanvas) return;
+  if (!state.stickerCanvas && !state.anim) return;
   const emojis = parseEmojis($('#emoji-input').value);
   if (!emojis) {
     toast('Add 1 to 3 emojis — WhatsApp requires them.');
@@ -391,9 +511,21 @@ async function saveSticker() {
   }
   const groupId = await resolveGroupId($('#group-select'));
   if (!groupId) return;
-  const png = state.stickerCanvas.toDataURL('image/png');
-  await withBusy(() => call('addSticker', { packId: groupId, png, emojis }));
-  localStorage.setItem(LAST_GROUP_KEY, groupId);
+  if (state.anim) {
+    await withBusy(async (progress) => {
+      const { blob } = await encodeAnimatedSticker(state.anim, state.cropRect, { margin: $('#opt-margin').checked, onProgress: progress });
+      const preview = document.createElement('canvas');
+      preview.width = preview.height = 512;
+      drawStickerFrame(preview.getContext('2d'), state.anim.frames[0], state.cropRect, contentRect(state.cropRect, { margin: $('#opt-margin').checked }));
+      progress('Saving…');
+      await call('addAnimatedSticker', { packId: groupId, webp: await blobToDataUrl(blob), preview: preview.toDataURL('image/png'), emojis });
+    }, 'Making GIF sticker…');
+    localStorage.setItem(LAST_GIF_GROUP_KEY, groupId);
+  } else {
+    const png = state.stickerCanvas.toDataURL('image/png');
+    await withBusy(() => call('addSticker', { packId: groupId, png, emojis }));
+    localStorage.setItem(LAST_GROUP_KEY, groupId);
+  }
   await refresh();
   const pack = state.packs.find((p) => p.id === groupId);
   closeEditor(() => {
@@ -405,17 +537,40 @@ async function saveSticker() {
   });
 }
 
-// ---------- images shared from other apps ----------
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+}
 
-async function receiveShared() {
-  const url = await call('takeSharedImage');
-  if (!url) return;
+// ---------- images shared from other apps / links ----------
+
+async function openFromUrl(url) {
   const blob = await (await fetch(url)).blob();
   if (!$('#editor').hidden) closeEditor(() => openEditor(blob));
   else {
     $$('dialog[open]').forEach((d) => d.close());
     await openEditor(blob);
   }
+}
+
+async function fromLink() {
+  const link = await askText('Paste a link to a GIF or image', '', { maxLength: 4000, placeholder: 'https://…' });
+  if (!link) return;
+  try {
+    const url = await withBusy(() => call('fetchMedia', { url: link }), 'Downloading…');
+    await openFromUrl(url);
+  } catch (err) {
+    toast(errorMessage(err), 6000);
+  }
+}
+
+async function receiveShared() {
+  const url = await call('takeSharedImage');
+  if (url) await openFromUrl(url);
 }
 
 // ---------- wiring ----------
@@ -429,6 +584,7 @@ function wire() {
   };
   $('#new-group-btn').onclick = () => newGroup().catch((err) => toast(errorMessage(err)));
   $('#help-btn').onclick = () => $('#help-dialog').showModal();
+  $('#link-btn').onclick = () => fromLink();
 
   // Crop step
   $$('[data-crop-mode]').forEach((btn) => {
@@ -454,6 +610,7 @@ function wire() {
   $('#undo-btn').onclick = () => brush.undo();
   $('#redo-btn').onclick = () => brush.redo();
   $('#fit-btn').onclick = () => brush.fit();
+  $('#magic-btn').onclick = () => magicCutout();
   $('#brush-back').onclick = () => history.back();
   $('#brush-next').onclick = () => pushStep('save');
 

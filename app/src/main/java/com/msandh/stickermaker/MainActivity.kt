@@ -141,6 +141,12 @@ class MainActivity : ComponentActivity() {
         }
 
         if (savedInstanceState == null) receiveShare(intent)
+        // Fetch the magic cut-out model early; it only arrives on its own for Play Store installs.
+        try {
+            SubjectCutout.requestModelDownload(this)
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not request cut-out model download", e)
+        }
         webView.loadUrl(START_URL)
     }
 
@@ -154,36 +160,61 @@ class MainActivity : ComponentActivity() {
         super.onDestroy()
     }
 
-    /** Copies an image shared from another app into the cache so the editor can load it. */
+    /**
+     * Receives an image/GIF/video file, or a text link to one, shared from another app, and
+     * hands a local copy to the editor.
+     */
     private fun receiveShare(intent: Intent?) {
         if (intent?.action != Intent.ACTION_SEND) return
         val uri = IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)
+        val link = intent.getStringExtra(Intent.EXTRA_TEXT)?.let { MediaFetcher.firstUrl(it) }
         setIntent(Intent(this, MainActivity::class.java))
-        if (uri == null) {
-            Toast.makeText(this, R.string.no_image_shared, Toast.LENGTH_LONG).show()
-            return
+        when {
+            uri != null -> {
+                val extension = when (contentResolver.getType(uri)) {
+                    "image/png" -> "png"
+                    "image/webp" -> "webp"
+                    "image/gif" -> "gif"
+                    "image/heic", "image/heif" -> "heic"
+                    "video/mp4" -> "mp4"
+                    "video/webm" -> "webm"
+                    else -> "jpg"
+                }
+                deliverShared {
+                    val file = File(sharedDir, "shared-${System.currentTimeMillis()}.$extension")
+                    contentResolver.openInputStream(uri)?.use { input ->
+                        file.outputStream().use { input.copyTo(it) }
+                    } ?: throw IllegalStateException(getString(R.string.no_image_shared))
+                    file
+                }
+            }
+            link != null -> {
+                Toast.makeText(this, R.string.downloading, Toast.LENGTH_SHORT).show()
+                deliverShared { MediaFetcher.download(link, sharedDir) }
+            }
+            else -> Toast.makeText(this, R.string.no_image_shared, Toast.LENGTH_LONG).show()
         }
-        val extension = when (contentResolver.getType(uri)) {
-            "image/png" -> "png"
-            "image/webp" -> "webp"
-            "image/gif" -> "gif"
-            "image/heic", "image/heif" -> "heic"
-            else -> "jpg"
-        }
+    }
+
+    private fun deliverShared(produce: () -> File) {
         bridge.runInBackground {
             try {
                 sharedDir.listFiles()?.forEach { it.delete() }
-                val name = "shared-${System.currentTimeMillis()}.$extension"
-                contentResolver.openInputStream(uri)?.use { input ->
-                    File(sharedDir, name).outputStream().use { input.copyTo(it) }
-                } ?: throw IllegalStateException("Could not open the shared image")
-                pendingSharedUrl = "/shared/$name"
+                pendingSharedUrl = "/shared/${produce().name}"
                 runOnUiThread { webView.evaluateJavascript("window.onSharedImage && window.onSharedImage()", null) }
             } catch (e: Exception) {
-                Log.e(TAG, "Could not receive shared image", e)
-                runOnUiThread { Toast.makeText(this, R.string.no_image_shared, Toast.LENGTH_LONG).show() }
+                Log.e(TAG, "Could not receive shared item", e)
+                val message = e.message ?: getString(R.string.no_image_shared)
+                runOnUiThread { Toast.makeText(this, message, Toast.LENGTH_LONG).show() }
             }
         }
+    }
+
+    /** Used by the editor's "paste a link" button. Runs on the bridge's background thread. */
+    fun downloadToShared(link: String): String {
+        sharedDir.listFiles()?.forEach { it.delete() }
+        val url = MediaFetcher.firstUrl(link) ?: throw IllegalArgumentException("That doesn't look like a link.")
+        return "/shared/${MediaFetcher.download(url, sharedDir).name}"
     }
 
     /** Hands the most recently shared image to the editor once. */

@@ -63,6 +63,7 @@ html, body {
 .btn.danger { background: transparent; color: var(--danger); }
 .btn.text { background: transparent; padding: 8px 10px; }
 .btn.text.strong { color: var(--accent); }
+.btn.text:disabled { opacity: .35; }
 .btn.wide { width: 100%; }
 
 .icon-btn {
@@ -110,6 +111,19 @@ html, body {
 }
 .group-head h3 { margin: 0; font-size: 17px; flex: 1; }
 .group-head .count { color: var(--muted); font-weight: 400; font-size: 14px; }
+.badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font-size: 11px;
+  font-weight: 700;
+  vertical-align: middle;
+}
+.busy-text { color: #fff; margin-top: 14px; font-size: 14px; text-align: center; }
+.busy { grid-auto-flow: row; align-content: center; justify-items: center; }
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
@@ -252,7 +266,7 @@ dialog.sheet li { margin-bottom: 10px; }
 
 .toast {
   position: fixed;
-  inset: auto auto 96px 50%;
+  inset: 72px auto auto 50%;
   margin: 0;
   border: 0;
   overflow: visible;

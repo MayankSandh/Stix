@@ -1,6 +1,11 @@
-// Interactive crop box drawn on a <canvas>. Crop rectangle is kept in image pixels.
+// WhatsApp-style crop: drag a corner/edge, and on release the view zooms to the selection.
+// The rest of the image stays visible (dimmed) around it, so you can drag back out to include more.
+// Crop rectangle is kept in image pixels; `view` maps image pixels to screen (CSS) pixels.
 const HANDLE_HIT = 28; // touch radius for handles, CSS px
 const MIN_SCREEN = 40; // smallest crop size on screen, CSS px
+const FIT_PAD = 36; // space kept around the crop box after auto-zoom, CSS px
+const MAX_ZOOM_PX = 8; // never zoom past 8 screen px per image px
+const ANIM_MS = 260;
 
 const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
 
@@ -11,19 +16,29 @@ export class CropTool {
     this.image = null;
     this.square = false;
     this.rect = null;
+    this.view = { scale: 1, ox: 0, oy: 0 };
+    this.pointers = new Map();
     this.drag = null;
+    this.pinch = null;
+    this.anim = null;
 
     new ResizeObserver(() => this.layout()).observe(canvas.parentElement);
     canvas.addEventListener('pointerdown', (e) => this.onDown(e));
     canvas.addEventListener('pointermove', (e) => this.onMove(e));
     canvas.addEventListener('pointerup', (e) => this.onUp(e));
     canvas.addEventListener('pointercancel', (e) => this.onUp(e));
+    canvas.addEventListener('wheel', (e) => this.onWheel(e), { passive: false });
   }
 
-  /** @param {HTMLCanvasElement|ImageBitmap} image */
+  /** @param {HTMLCanvasElement} image may contain transparency (erased areas) */
   setImage(image) {
     this.image = image;
     this.reset();
+  }
+
+  /** Redraw after the image's pixels changed, keeping the crop box and zoom. */
+  refresh() {
+    this.draw();
   }
 
   setSquare(square) {
@@ -32,6 +47,7 @@ export class CropTool {
       const r = this.rect;
       const s = Math.min(r.w, r.h);
       this.rect = { x: r.x + (r.w - s) / 2, y: r.y + (r.h - s) / 2, w: s, h: s };
+      this.zoomToCrop();
     }
     this.draw();
   }
@@ -46,6 +62,8 @@ export class CropTool {
       this.rect = { x: 0, y: 0, w: W, h: H };
     }
     this.layout();
+    this.view = this.fitView(this.rect);
+    this.draw();
   }
 
   /** Crop rectangle in whole image pixels. */
@@ -66,93 +84,211 @@ export class CropTool {
     const dpr = window.devicePixelRatio || 1;
     this.canvas.width = Math.round(cssW * dpr);
     this.canvas.height = Math.round(cssH * dpr);
+    const firstLayout = !this.cssW;
     this.dpr = dpr;
     this.cssW = cssW;
     this.cssH = cssH;
-    if (this.image) {
-      const pad = 24;
-      const { width: W, height: H } = this.image;
-      this.scale = Math.min((cssW - pad * 2) / W, (cssH - pad * 2) / H);
-      this.ox = (cssW - W * this.scale) / 2;
-      this.oy = (cssH - H * this.scale) / 2;
+    if (this.image && this.rect && (firstLayout || this.needsFit)) {
+      this.view = this.fitView(this.rect);
+      this.needsFit = false;
+    } else if (!this.image) {
+      this.needsFit = true;
     }
     this.draw();
   }
 
-  minSize() {
+  /** Scale at which the whole image fits the screen. */
+  fitAllScale() {
     const { width: W, height: H } = this.image;
-    return Math.min(MIN_SCREEN / this.scale, W, H);
+    return Math.min((this.cssW - FIT_PAD * 2) / W, (this.cssH - FIT_PAD * 2) / H);
   }
 
-  toImage(e) {
-    const b = this.canvas.getBoundingClientRect();
+  maxScale() {
+    return Math.max(MAX_ZOOM_PX, this.fitAllScale());
+  }
+
+  /** View that centers `r` with FIT_PAD of room around it. */
+  fitView(r) {
+    if (!this.cssW) return this.view;
+    const scale = clamp(
+      Math.min((this.cssW - FIT_PAD * 2) / r.w, (this.cssH - FIT_PAD * 2) / r.h),
+      this.fitAllScale(),
+      this.maxScale(),
+    );
     return {
-      x: (e.clientX - b.left - this.ox) / this.scale,
-      y: (e.clientY - b.top - this.oy) / this.scale,
+      scale,
+      ox: this.cssW / 2 - (r.x + r.w / 2) * scale,
+      oy: this.cssH / 2 - (r.y + r.h / 2) * scale,
     };
   }
 
-  hitTest(e) {
+  zoomToCrop() {
+    this.animateTo(this.fitView(this.rect));
+  }
+
+  animateTo(target) {
+    const from = { ...this.view };
+    const start = performance.now();
+    cancelAnimationFrame(this.anim);
+    const step = (now) => {
+      const t = Math.min(1, (now - start) / ANIM_MS);
+      const k = 1 - (1 - t) ** 3; // ease-out
+      this.view = {
+        scale: from.scale + (target.scale - from.scale) * k,
+        ox: from.ox + (target.ox - from.ox) * k,
+        oy: from.oy + (target.oy - from.oy) * k,
+      };
+      this.draw();
+      this.anim = t < 1 ? requestAnimationFrame(step) : null;
+    };
+    this.anim = requestAnimationFrame(step);
+  }
+
+  get animating() {
+    return this.anim !== null && this.anim !== undefined;
+  }
+
+  minSize() {
+    const { width: W, height: H } = this.image;
+    return Math.min(MIN_SCREEN / this.view.scale, W, H);
+  }
+
+  local(e) {
     const b = this.canvas.getBoundingClientRect();
-    const px = e.clientX - b.left;
-    const py = e.clientY - b.top;
+    return { x: e.clientX - b.left, y: e.clientY - b.top };
+  }
+
+  toImage(p) {
+    const v = this.view;
+    return { x: (p.x - v.ox) / v.scale, y: (p.y - v.oy) / v.scale };
+  }
+
+  hitTest(p) {
+    const { scale, ox, oy } = this.view;
     const r = this.rect;
-    const L = this.ox + r.x * this.scale;
-    const T = this.oy + r.y * this.scale;
-    const R = L + r.w * this.scale;
-    const B = T + r.h * this.scale;
+    const L = ox + r.x * scale;
+    const T = oy + r.y * scale;
+    const R = L + r.w * scale;
+    const B = T + r.h * scale;
     const near = (a, b) => Math.abs(a - b) <= HANDLE_HIT;
     const corners = { nw: [L, T], ne: [R, T], sw: [L, B], se: [R, B] };
     let best = null;
     let bestDist = Infinity;
     for (const [name, [cx, cy]] of Object.entries(corners)) {
-      const d = Math.hypot(px - cx, py - cy);
+      const d = Math.hypot(p.x - cx, p.y - cy);
       if (d <= HANDLE_HIT && d < bestDist) { best = name; bestDist = d; }
     }
     if (best) return best;
     if (!this.square) {
-      const insideX = px > L && px < R;
-      const insideY = py > T && py < B;
-      if (near(py, T) && insideX) return 'n';
-      if (near(py, B) && insideX) return 's';
-      if (near(px, L) && insideY) return 'w';
-      if (near(px, R) && insideY) return 'e';
+      const insideX = p.x > L && p.x < R;
+      const insideY = p.y > T && p.y < B;
+      if (near(p.y, T) && insideX) return 'n';
+      if (near(p.y, B) && insideX) return 's';
+      if (near(p.x, L) && insideY) return 'w';
+      if (near(p.x, R) && insideY) return 'e';
     }
-    if (px >= L && px <= R && py >= T && py <= B) return 'move';
-    return null;
+    if (p.x >= L && p.x <= R && p.y >= T && p.y <= B) return 'move';
+    return 'pan';
   }
 
   onDown(e) {
-    if (!this.image || this.drag) return;
-    const handle = this.hitTest(e);
-    if (!handle) return;
+    if (!this.image) return;
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
     this.canvas.setPointerCapture(e.pointerId);
-    this.drag = { id: e.pointerId, handle, start: this.toImage(e), rect: { ...this.rect } };
+    const p = this.local(e);
+    this.pointers.set(e.pointerId, p);
+    cancelAnimationFrame(this.anim);
+    this.anim = null;
+
+    if (this.pointers.size === 1) {
+      const handle = this.hitTest(p);
+      this.drag = { id: e.pointerId, handle, startScreen: p, start: this.toImage(p), rect: { ...this.rect }, view: { ...this.view }, changed: false };
+    } else if (this.pointers.size === 2) {
+      this.drag = null;
+      const [a, b] = [...this.pointers.values()];
+      this.pinch = {
+        dist: Math.hypot(a.x - b.x, a.y - b.y) || 1,
+        mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 },
+        view: { ...this.view },
+      };
+    }
   }
 
   onMove(e) {
-    if (!this.drag) {
-      if (this.image && e.pointerType === 'mouse') {
-        const h = this.hitTest(e);
-        const cursors = { nw: 'nwse-resize', se: 'nwse-resize', ne: 'nesw-resize', sw: 'nesw-resize', n: 'ns-resize', s: 'ns-resize', e: 'ew-resize', w: 'ew-resize', move: 'move' };
-        this.canvas.style.cursor = cursors[h] || 'default';
+    const p = this.local(e);
+    if (!this.pointers.has(e.pointerId)) {
+      if (e.pointerType === 'mouse' && this.image) {
+        const cursors = { nw: 'nwse-resize', se: 'nwse-resize', ne: 'nesw-resize', sw: 'nesw-resize', n: 'ns-resize', s: 'ns-resize', e: 'ew-resize', w: 'ew-resize', move: 'move', pan: 'grab' };
+        this.canvas.style.cursor = cursors[this.hitTest(p)] || 'default';
       }
       return;
     }
-    if (e.pointerId !== this.drag.id) return;
-    const p = this.toImage(e);
-    const dx = p.x - this.drag.start.x;
-    const dy = p.y - this.drag.start.y;
-    const { handle, rect: r } = this.drag;
+    this.pointers.set(e.pointerId, p);
+
+    if (this.pinch) {
+      this.updatePinch();
+    } else if (this.drag && this.drag.id === e.pointerId) {
+      this.updateDrag(p);
+    }
+    this.draw();
+  }
+
+  onUp(e) {
+    if (!this.pointers.has(e.pointerId)) return;
+    this.pointers.delete(e.pointerId);
+    if (this.pinch && this.pointers.size < 2) {
+      this.pinch = null;
+      this.drag = null; // a finger may remain; it shouldn't start dragging the box
+      return;
+    }
+    if (this.drag && this.drag.id === e.pointerId) {
+      const { handle, changed } = this.drag;
+      this.drag = null;
+      if (changed && handle !== 'pan') this.zoomToCrop();
+    }
+  }
+
+  onWheel(e) {
+    if (!this.image) return;
+    e.preventDefault();
+    const p = this.local(e);
+    const img = this.toImage(p);
+    const scale = clamp(this.view.scale * Math.exp(-e.deltaY * 0.0015), this.fitAllScale() * 0.5, this.maxScale());
+    this.view = { scale, ox: p.x - img.x * scale, oy: p.y - img.y * scale };
+    this.draw();
+  }
+
+  updatePinch() {
+    const [a, b] = [...this.pointers.values()];
+    const dist = Math.hypot(a.x - b.x, a.y - b.y) || 1;
+    const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    const s = this.pinch;
+    const scale = clamp(s.view.scale * (dist / s.dist), this.fitAllScale() * 0.5, this.maxScale());
+    const imgX = (s.mid.x - s.view.ox) / s.view.scale;
+    const imgY = (s.mid.y - s.view.oy) / s.view.scale;
+    this.view = { scale, ox: mid.x - imgX * scale, oy: mid.y - imgY * scale };
+  }
+
+  updateDrag(p) {
+    const d = this.drag;
+    if (Math.hypot(p.x - d.startScreen.x, p.y - d.startScreen.y) > 3) d.changed = true;
+    if (d.handle === 'pan') {
+      this.view = { ...d.view, ox: d.view.ox + p.x - d.startScreen.x, oy: d.view.oy + p.y - d.startScreen.y };
+      return;
+    }
+    const ip = this.toImage(p);
+    const dx = ip.x - d.start.x;
+    const dy = ip.y - d.start.y;
+    const r = d.rect;
     const { width: W, height: H } = this.image;
     const min = this.minSize();
 
-    if (handle === 'move') {
+    if (d.handle === 'move') {
       this.rect = { ...r, x: clamp(r.x + dx, 0, W - r.w), y: clamp(r.y + dy, 0, H - r.h) };
-    } else if (handle.length === 2) {
+    } else if (d.handle.length === 2) {
       // Corner: the opposite corner stays fixed.
-      const west = handle.includes('w');
-      const north = handle.includes('n');
+      const west = d.handle.includes('w');
+      const north = d.handle.includes('n');
       const ax = west ? r.x + r.w : r.x;
       const ay = north ? r.y + r.h : r.y;
       const sx = west ? -1 : 1;
@@ -171,38 +307,51 @@ export class CropTool {
     } else {
       // Edge (free mode only).
       let { x, y, w, h } = r;
-      if (handle === 'n') { const b = r.y + r.h; y = clamp(r.y + dy, 0, b - min); h = b - y; }
-      if (handle === 's') { h = clamp(r.h + dy, min, H - r.y); }
-      if (handle === 'w') { const rr = r.x + r.w; x = clamp(r.x + dx, 0, rr - min); w = rr - x; }
-      if (handle === 'e') { w = clamp(r.w + dx, min, W - r.x); }
+      if (d.handle === 'n') { const b = r.y + r.h; y = clamp(r.y + dy, 0, b - min); h = b - y; }
+      if (d.handle === 's') { h = clamp(r.h + dy, min, H - r.y); }
+      if (d.handle === 'w') { const rr = r.x + r.w; x = clamp(r.x + dx, 0, rr - min); w = rr - x; }
+      if (d.handle === 'e') { w = clamp(r.w + dx, min, W - r.x); }
       this.rect = { x, y, w, h };
     }
-    this.draw();
   }
 
-  onUp(e) {
-    if (this.drag && e.pointerId === this.drag.id) this.drag = null;
+  checker() {
+    if (!this.checkerPattern) {
+      const tile = document.createElement('canvas');
+      tile.width = tile.height = 16;
+      const t = tile.getContext('2d');
+      t.fillStyle = '#fff';
+      t.fillRect(0, 0, 16, 16);
+      t.fillStyle = '#ccc';
+      t.fillRect(0, 0, 8, 8);
+      t.fillRect(8, 8, 8, 8);
+      this.checkerPattern = this.ctx.createPattern(tile, 'repeat');
+    }
+    return this.checkerPattern;
   }
 
   draw() {
     const { ctx, canvas } = this;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    if (!this.image || !this.rect || !this.scale) return;
+    if (!this.image || !this.rect || !this.cssW) return;
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
 
     const { width: W, height: H } = this.image;
-    const s = this.scale;
+    const { scale: s, ox, oy } = this.view;
+    ctx.fillStyle = this.checker();
+    ctx.fillRect(ox, oy, W * s, H * s);
+    ctx.imageSmoothingEnabled = s < 2;
     ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(this.image, this.ox, this.oy, W * s, H * s);
+    ctx.drawImage(this.image, ox, oy, W * s, H * s);
 
     const r = this.rect;
-    const L = this.ox + r.x * s;
-    const T = this.oy + r.y * s;
+    const L = ox + r.x * s;
+    const T = oy + r.y * s;
     const RW = r.w * s;
     const RH = r.h * s;
 
-    // Dim everything outside the crop box.
+    // Dim everything outside the crop box (still visible, so you can drag back out).
     ctx.fillStyle = 'rgba(0,0,0,0.6)';
     ctx.beginPath();
     ctx.rect(0, 0, this.cssW, this.cssH);
@@ -225,7 +374,7 @@ export class CropTool {
     ctx.lineWidth = 2;
     ctx.strokeRect(L, T, RW, RH);
 
-    // Corner handles.
+    // Corner handles (and edge handles in free mode).
     ctx.lineWidth = 4;
     ctx.lineCap = 'round';
     const len = Math.min(22, RW / 3, RH / 3);

@@ -52,6 +52,13 @@ class NativeBridge(
             val png = Base64.decode(dataUrl.substringAfter(','), Base64.DEFAULT)
             repo.addSticker(args.getString("packId"), png, args.emojis()).file
         }
+        "addAnimatedSticker" -> repo.addAnimatedSticker(
+            args.getString("packId"),
+            args.getString("webp").fromDataUrl(),
+            args.getString("preview").fromDataUrl(),
+            args.emojis(),
+        ).file
+        "fetchMedia" -> activity.downloadToShared(args.getString("url"))
         "setEmojis" -> repo.setEmojis(args.getString("packId"), args.getString("file"), args.emojis()).let { null }
         "moveSticker" -> repo.moveSticker(args.getString("packId"), args.getString("file"), args.getString("toPackId")).let { null }
         "deleteSticker" -> repo.deleteSticker(args.getString("packId"), args.getString("file")).let { null }
@@ -64,6 +71,10 @@ class NativeBridge(
             DEFERRED
         }
         "takeSharedImage" -> activity.takeSharedImageUrl()
+        "segmentSubject" -> {
+            val dataUrl = args.getString("image")
+            SubjectCutout.maskDataUrl(activity, Base64.decode(dataUrl.substringAfter(','), Base64.DEFAULT))
+        }
         else -> throw IllegalArgumentException("Unknown method: $method")
     }
 
@@ -73,6 +84,7 @@ class NativeBridge(
             packs.put(JSONObject()
                 .put("id", pack.id)
                 .put("name", pack.name)
+                .put("animated", pack.animated ?: JSONObject.NULL)
                 .put("inWhatsApp", pack.stickers.size >= StickerRepository.MIN_STICKERS && WhatsApp.isAdded(activity, pack.id))
                 .put("stickers", JSONArray().apply {
                     for (s in pack.stickers) {
@@ -95,6 +107,8 @@ class NativeBridge(
         require(name.isNotEmpty()) { "Name can't be empty" }
         return name
     }
+
+    private fun String.fromDataUrl(): ByteArray = Base64.decode(substringAfter(','), Base64.DEFAULT)
 
     private fun JSONObject.emojis(): List<String> {
         val array = optJSONArray("emojis") ?: return emptyList()

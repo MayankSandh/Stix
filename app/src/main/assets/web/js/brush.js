@@ -16,10 +16,12 @@ function copyCanvas(src) {
 }
 
 export class BrushEditor {
-  constructor(canvas, { onHistoryChange } = {}) {
+  constructor(canvas, { onHistoryChange, onViewChange } = {}) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
     this.onHistoryChange = onHistoryChange || (() => {});
+    this.onViewChange = onViewChange || (() => {});
+    this.dirty = false;
     this.mode = 'erase';
     this.brushSize = 40; // diameter in CSS px, constant on screen regardless of zoom
     this.pointers = new Map();
@@ -41,16 +43,50 @@ export class BrushEditor {
     canvas.addEventListener('wheel', (e) => this.onWheel(e), { passive: false });
   }
 
-  /** @param {HTMLCanvasElement} source image to edit (not modified) */
-  setImage(source) {
-    this.original = copyCanvas(source);
-    this.work = copyCanvas(source);
-    this.workCtx = this.work.getContext('2d');
+  /**
+   * @param {HTMLCanvasElement} original untouched pixels (what Restore paints back)
+   * @param {HTMLCanvasElement} [start] starting point, e.g. with earlier erasing; defaults to original
+   */
+  setImage(original, start = original) {
+    this.original = copyCanvas(original);
+    this.work = copyCanvas(start);
+    this.workCtx = this.work.getContext('2d', { willReadFrequently: false });
     this.restorePattern = null;
     this.undoStack = [];
     this.redoStack = [];
+    this.dirty = false;
     this.onHistoryChange();
     this.layout(true);
+  }
+
+  /** Keeps only the original pixels where `mask` is opaque (soft edges preserved). Undoable. */
+  applyMask(mask) {
+    this.pushUndo(copyCanvas(this.work));
+    const ctx = this.workCtx;
+    ctx.save();
+    ctx.globalCompositeOperation = 'copy';
+    ctx.drawImage(this.original, 0, 0);
+    ctx.globalCompositeOperation = 'destination-in';
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(mask, 0, 0, this.work.width, this.work.height);
+    ctx.restore();
+    this.dirty = true;
+    this.requestDraw();
+  }
+
+  /** True when zoomed or panned away from the fitted view. */
+  isZoomed() {
+    if (!this.work || !this.fitScale) return false;
+    const fit = this.fitView();
+    return Math.abs(this.view.scale - fit.scale) > 0.001 || Math.abs(this.view.ox - fit.ox) > 1 || Math.abs(this.view.oy - fit.oy) > 1;
+  }
+
+  fitView() {
+    return {
+      scale: this.fitScale,
+      ox: (this.cssW - this.work.width * this.fitScale) / 2,
+      oy: (this.cssH - this.work.height * this.fitScale) / 2,
+    };
   }
 
   getResult() {
@@ -86,6 +122,7 @@ export class BrushEditor {
     this.workCtx.globalCompositeOperation = 'copy';
     this.workCtx.drawImage(canvas, 0, 0);
     this.workCtx.globalCompositeOperation = 'source-over';
+    this.dirty = true;
     this.onHistoryChange();
     this.requestDraw();
   }
@@ -117,11 +154,7 @@ export class BrushEditor {
       const pad = 16;
       this.fitScale = Math.min((cssW - pad * 2) / this.work.width, (cssH - pad * 2) / this.work.height);
       if (refit || firstLayout || this.needsFit) {
-        this.view = {
-          scale: this.fitScale,
-          ox: (cssW - this.work.width * this.fitScale) / 2,
-          oy: (cssH - this.work.height * this.fitScale) / 2,
-        };
+        this.view = this.fitView();
         this.needsFit = false;
       }
     } else {
@@ -247,6 +280,7 @@ export class BrushEditor {
   }
 
   paintDab(p) {
+    this.dirty = true;
     const ctx = this.workCtx;
     ctx.save();
     this.setupBrush(ctx);
@@ -317,6 +351,11 @@ export class BrushEditor {
   }
 
   draw() {
+    const zoomed = this.isZoomed();
+    if (zoomed !== this.lastZoomed) {
+      this.lastZoomed = zoomed;
+      this.onViewChange(zoomed);
+    }
     const { ctx, canvas } = this;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
