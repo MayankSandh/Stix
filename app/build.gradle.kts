@@ -8,6 +8,8 @@ val appId = "com.msandh.stickermaker"
 val providerAuthority = "$appId.stickercontentprovider"
 // CI passes these in; without them the release build falls back to the debug key.
 val keystorePath: String? = System.getenv("SIGNING_KEYSTORE_PATH")
+// Public repo the app checks for updates (only release files live there, not the code).
+val updateRepo = System.getenv("UPDATE_REPO") ?: "MayankSandh/Stix-releases"
 
 android {
     namespace = appId
@@ -21,6 +23,7 @@ android {
         versionName = "1.0.$versionCode"
         manifestPlaceholders["contentProviderAuthority"] = providerAuthority
         buildConfigField("String", "CONTENT_PROVIDER_AUTHORITY", "\"$providerAuthority\"")
+        buildConfigField("String", "UPDATE_INFO_URL", "\"https://github.com/$updateRepo/releases/latest/download/version.json\"")
     }
 
     signingConfigs {

@@ -299,3 +299,20 @@ dialog.sheet li { margin-bottom: 10px; }
   animation: spin .8s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+.banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 12px 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--panel);
+  font-size: 14px;
+}
+.banner span { flex: 1; }
+.banner .btn { padding: 8px 14px; font-size: 14px; }
+.icon-btn.small { width: 32px; height: 32px; font-size: 14px; }
+.settings-section { margin: 4px 0 18px; }
+.settings-section h4 { margin: 0 0 6px; color: var(--muted); font-size: 13px; text-transform: uppercase; letter-spacing: .05em; }
+.hint.left { text-align: left; margin-bottom: 10px; font-size: 14px; }

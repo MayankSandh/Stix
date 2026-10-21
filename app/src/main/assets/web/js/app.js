@@ -75,9 +75,10 @@ function askText(title, initial = '', { maxLength = 60, placeholder = '' } = {})
   });
 }
 
-function confirmDelete(text) {
+function confirmDelete(text, okLabel = 'Delete') {
   const dialog = $('#confirm-dialog');
   $('#confirm-text').textContent = text;
+  $('#confirm-ok').textContent = okLabel;
   dialog.returnValue = '';
   dialog.showModal();
   return new Promise((resolve) => {
@@ -96,6 +97,127 @@ const EMOJI = /\p{Extended_Pictographic}|\p{Regional_Indicator}/u;
 function parseEmojis(text) {
   const emojis = [...new Set([...graphemes.segment(text)].map((g) => g.segment).filter((g) => EMOJI.test(g)))];
   return emojis.length >= 1 && emojis.length <= 3 ? emojis : null;
+}
+
+function timeAgo(ms) {
+  if (!ms) return 'never';
+  const min = Math.round((Date.now() - ms) / 60000);
+  if (min < 1) return 'just now';
+  if (min < 60) return `${min} min ago`;
+  const h = Math.round(min / 60);
+  if (h < 24) return `${h} h ago`;
+  return new Date(ms).toLocaleDateString();
+}
+
+// ---------- settings: backup & updates ----------
+
+async function openSettings() {
+  $('#settings-dialog').showModal();
+  await renderSettings();
+}
+
+async function renderSettings() {
+  const settings = await call('getSettings');
+  const b = settings.backup;
+  let text;
+  if (!b.location) {
+    text = 'Not set up. Your stickers are only on this phone, so uninstalling Stix or losing the phone would lose them.';
+  } else if (b.error) {
+    text = `Backing up to ${b.location}. Last backup failed: ${b.error}`;
+  } else {
+    text = `Backing up to ${b.location} automatically after every change. Last backup: ${timeAgo(b.lastBackupAt)}.`;
+  }
+  $('#backup-status').textContent = text;
+  $('#backup-choose').textContent = b.location ? 'Change backup file…' : 'Set up backup…';
+  $('#backup-choose').classList.toggle('primary', !b.location);
+  $('#backup-choose').classList.toggle('secondary', !!b.location);
+  $('#backup-now').hidden = !b.location;
+  $('#version-text').textContent = `You're on Stix ${settings.versionName}.`;
+  return settings;
+}
+
+async function chooseBackupLocation() {
+  try {
+    const result = await call('chooseBackupLocation');
+    if (result.cancelled) return;
+    toast(`Backed up to ${result.location}. It will stay up to date automatically.`, 5000);
+    localStorage.setItem('backupNudgeDone', '1');
+    $('#backup-nudge').hidden = true;
+  } catch (err) {
+    toast(errorMessage(err), 6000);
+  }
+  if ($('#settings-dialog').open) await renderSettings();
+}
+
+async function backupNow() {
+  try {
+    await withBusy(() => call('backupNow'), 'Backing up…');
+    toast('Backup done.');
+  } catch (err) {
+    toast(errorMessage(err), 6000);
+  }
+  await renderSettings();
+}
+
+async function restoreFromBackup() {
+  let summary;
+  try {
+    summary = await call('pickRestoreFile');
+  } catch (err) {
+    toast(errorMessage(err), 6000);
+    return;
+  }
+  if (!summary || summary.cancelled) return;
+  const when = summary.createdAt ? new Date(summary.createdAt).toLocaleString() : 'an unknown date';
+  const ok = await confirmDelete(
+    `Restore ${summary.packs} group${summary.packs === 1 ? '' : 's'} with ${summary.stickers} sticker${summary.stickers === 1 ? '' : 's'} from the backup made ${when}? This replaces the stickers currently in Stix.`,
+    'Restore',
+  );
+  if (!ok) return;
+  try {
+    await withBusy(() => call('applyRestore'), 'Restoring…');
+    await refresh();
+    toast('Restored. Tap “Add to WhatsApp” on each pack if it isn’t in WhatsApp yet.', 6000);
+  } catch (err) {
+    toast(errorMessage(err), 6000);
+  }
+  if ($('#settings-dialog').open) await renderSettings();
+}
+
+async function checkForUpdate({ quiet = false } = {}) {
+  try {
+    const info = await call('checkForUpdate');
+    $('#update-banner').hidden = !info.available;
+    if (info.available) {
+      $('#update-text').textContent = `Stix ${info.versionName} is available${info.notes ? `: ${info.notes}` : '.'}`;
+      if (!quiet) toast(`Update available: ${info.versionName}`);
+    } else if (!quiet) {
+      toast(`You're up to date (${info.currentVersion}).`);
+    }
+  } catch (err) {
+    if (!quiet) toast(errorMessage(err), 5000);
+  }
+}
+
+async function installUpdate() {
+  const busyText = (pct) => { $('#busy-text').textContent = `Downloading update… ${pct}%`; };
+  window.onUpdateProgress = busyText;
+  try {
+    const result = await withBusy(() => call('installUpdate'), 'Downloading update…');
+    if (result.status === 'denied') toast('To update, allow Stix to install apps when Android asks, then tap Update again.', 7000);
+  } catch (err) {
+    toast(errorMessage(err), 6000);
+  } finally {
+    window.onUpdateProgress = null;
+  }
+}
+
+async function maybeNudgeBackup() {
+  if (localStorage.getItem('backupNudgeDone')) return;
+  const hasStickers = state.packs.some((p) => p.stickers.length);
+  if (!hasStickers) return;
+  const settings = await call('getSettings').catch(() => null);
+  $('#backup-nudge').hidden = !settings || !!settings.backup.location;
 }
 
 // ---------- home: packs ----------
@@ -555,6 +677,7 @@ async function saveSticker() {
     localStorage.setItem(LAST_GROUP_KEY, groupId);
   }
   await refresh();
+  maybeNudgeBackup().catch(() => {});
   const pack = state.packs.find((p) => p.id === groupId);
   closeEditor(() => {
     if (!pack) return;
@@ -611,7 +734,18 @@ function wire() {
     if (file) openEditor(file);
   };
   $('#new-group-btn').onclick = () => newGroup().catch((err) => toast(errorMessage(err)));
-  $('#help-btn').onclick = () => $('#help-dialog').showModal();
+  $('#help-btn').onclick = () => { $('#settings-dialog').close(); $('#help-dialog').showModal(); };
+  $('#settings-btn').onclick = () => openSettings().catch((err) => toast(errorMessage(err)));
+  $('#backup-choose').onclick = () => chooseBackupLocation();
+  $('#backup-now').onclick = () => backupNow();
+  $('#backup-restore').onclick = () => restoreFromBackup();
+  $('#update-check').onclick = () => checkForUpdate();
+  $('#update-btn').onclick = () => installUpdate();
+  $('#nudge-setup').onclick = () => chooseBackupLocation();
+  $('#nudge-close').onclick = () => {
+    localStorage.setItem('backupNudgeDone', '1');
+    $('#backup-nudge').hidden = true;
+  };
   $('#link-btn').onclick = () => fromLink();
 
   // Crop step
@@ -697,6 +831,8 @@ async function main() {
     $('#help-dialog').showModal();
   }
   await receiveShared().catch((err) => toast(errorMessage(err)));
+  checkForUpdate({ quiet: true });
+  maybeNudgeBackup().catch(() => {});
 }
 
 main();

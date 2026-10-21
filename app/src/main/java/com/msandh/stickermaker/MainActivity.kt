@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.net.Uri
 import android.os.Bundle
+import android.provider.Settings
 import android.util.Log
 import android.view.ViewGroup
 import android.webkit.ValueCallback
@@ -65,6 +66,50 @@ class MainActivity : ComponentActivity() {
 
     private var pendingIntent: Intent? = null
 
+    private var pendingBackupRequest: String? = null
+    private var pendingRestoreRequest: String? = null
+    private var pendingInstallRequest: String? = null
+    private var restoreSource: Uri? = null
+
+    private val createBackupFile = registerForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
+        val requestId = pendingBackupRequest ?: return@registerForActivityResult
+        pendingBackupRequest = null
+        if (uri == null) return@registerForActivityResult bridge.ok(requestId, JSONObject().put("cancelled", true))
+        bridge.runInBackground {
+            try {
+                val backup = BackupManager.get(this)
+                backup.setLocation(uri)
+                bridge.ok(requestId, backup.backupNow())
+            } catch (e: Exception) {
+                bridge.fail(requestId, e)
+            }
+        }
+    }
+
+    private val openBackupFile = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        val requestId = pendingRestoreRequest ?: return@registerForActivityResult
+        pendingRestoreRequest = null
+        if (uri == null) return@registerForActivityResult bridge.ok(requestId, JSONObject().put("cancelled", true))
+        restoreSource = uri
+        bridge.runInBackground {
+            try {
+                bridge.ok(requestId, BackupManager.get(this).inspect(uri))
+            } catch (e: Exception) {
+                bridge.fail(requestId, e)
+            }
+        }
+    }
+
+    private val allowInstalls = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        val requestId = pendingInstallRequest ?: return@registerForActivityResult
+        if (packageManager.canRequestPackageInstalls()) {
+            startUpdate(requestId)
+        } else {
+            pendingInstallRequest = null
+            bridge.ok(requestId, JSONObject().put("status", "denied"))
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val firstLaunch = savedInstanceState == null
@@ -97,6 +142,7 @@ class MainActivity : ComponentActivity() {
 
     private fun setUp(firstLaunch: Boolean) {
         val repo = StickerRepository.get(this)
+        BackupManager.get(this) // starts keeping the backup file up to date
         sharedDir = File(cacheDir, "shared").apply { mkdirs() }
 
         // Draw edge to edge and pad the content away from the status/navigation bars and keyboard.
@@ -255,6 +301,51 @@ class MainActivity : ComponentActivity() {
         val url = pendingSharedUrl
         pendingSharedUrl = null
         return url
+    }
+
+    fun chooseBackupLocation(requestId: String) {
+        pendingBackupRequest = requestId
+        createBackupFile.launch("Stix-backup.zip")
+    }
+
+    fun pickRestoreFile(requestId: String) {
+        pendingRestoreRequest = requestId
+        openBackupFile.launch(arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream"))
+    }
+
+    /** Runs on the bridge thread after the user confirmed the restore. */
+    fun applyRestore(): JSONObject = BackupManager.get(this).restore(restoreSource).also { restoreSource = null }
+
+    fun installUpdate(requestId: String) {
+        pendingInstallRequest = requestId
+        if (!packageManager.canRequestPackageInstalls()) {
+            // Android asks once: "Allow Stix to install unknown apps".
+            allowInstalls.launch(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
+            return
+        }
+        startUpdate(requestId)
+    }
+
+    private fun startUpdate(requestId: String) {
+        pendingInstallRequest = null
+        bridge.runInBackground {
+            try {
+                val info = Updater.fetchInfo() ?: throw IllegalStateException("No update is available.")
+                val apk = Updater.download(this, info) { pct ->
+                    runOnUiThread { webView.evaluateJavascript("window.onUpdateProgress && window.onUpdateProgress($pct)", null) }
+                }
+                runOnUiThread {
+                    try {
+                        startActivity(Updater.installIntent(this, apk))
+                        bridge.ok(requestId, JSONObject().put("status", "installing"))
+                    } catch (e: Exception) {
+                        bridge.fail(requestId, e)
+                    }
+                }
+            } catch (e: Exception) {
+                bridge.fail(requestId, e)
+            }
+        }
     }
 
     /** Asks WhatsApp to add the pack, the same way WhatsApp's sample app does. */

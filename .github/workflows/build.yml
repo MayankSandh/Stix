@@ -52,3 +52,37 @@ jobs:
             --title "Build ${{ github.run_number }}" \
             --notes "Open this page on your phone and tap Stix.apk to install or update." \
             --latest
+
+      - name: Write update info
+        env:
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+          RUN: ${{ github.run_number }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          NOTES=$(printf '%s' "$COMMIT_MESSAGE" | head -n 1)
+          jq -n --argjson code "$RUN" --arg owner "$OWNER" --arg notes "$NOTES" '{
+            versionCode: $code,
+            versionName: ("1.0." + ($code | tostring)),
+            apkUrl: ("https://github.com/" + $owner + "/Stix-releases/releases/download/build-" + ($code | tostring) + "/Stix.apk"),
+            notes: $notes
+          }' > version.json
+          cat version.json
+
+      # The app checks this public repo for updates. Needs a RELEASES_TOKEN secret
+      # (fine-grained token with Contents: read & write on <owner>/Stix-releases).
+      - name: Publish to the in-app update channel
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::warning::RELEASES_TOKEN is not set, so in-app updates won't see this build."
+            exit 0
+          fi
+          printf '%s' "$COMMIT_MESSAGE" | head -n 1 > notes.txt
+          gh release create "build-${{ github.run_number }}" Stix.apk version.json \
+            --repo "$OWNER/Stix-releases" \
+            --title "Stix 1.0.${{ github.run_number }}" \
+            --notes-file notes.txt \
+            --latest

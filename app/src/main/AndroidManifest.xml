@@ -3,6 +3,8 @@
 
     <!-- Downloads GIFs/images from shared links. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- In-app updates: hand the downloaded update to Android's installer. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <!-- Lets the app check whether WhatsApp / WhatsApp Business are installed (Android 11+). -->
     <queries>
@@ -47,6 +49,17 @@
                 <data android:mimeType="text/plain" />
             </intent-filter>
         </activity>
+
+        <!-- Shares the downloaded update file with Android's installer. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
 
         <!-- WhatsApp reads sticker packs from here. Only WhatsApp holds this read permission. -->
         <provider

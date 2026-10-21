@@ -42,6 +42,13 @@ class NativeBridge(
 
     fun runInBackground(task: () -> Unit) = executor.execute { task() }
 
+    fun ok(requestId: String, value: Any?) = resolve(requestId, JSONObject().put("ok", value ?: JSONObject.NULL))
+
+    fun fail(requestId: String, e: Exception) {
+        Log.e(TAG, "Request failed", e)
+        resolve(requestId, JSONObject().put("error", e.message ?: e.javaClass.simpleName))
+    }
+
     private fun dispatch(requestId: String, method: String, args: JSONObject): Any? = when (method) {
         "listPacks" -> listPacks()
         "createPack" -> JSONObject().put("id", repo.createPack(args.name()).id)
@@ -71,6 +78,24 @@ class NativeBridge(
             DEFERRED
         }
         "takeSharedImage" -> activity.takeSharedImageUrl()
+        "getSettings" -> JSONObject()
+            .put("versionName", BuildConfig.VERSION_NAME)
+            .put("backup", BackupManager.get(activity).status())
+        "backupNow" -> BackupManager.get(activity).backupNow()
+        "chooseBackupLocation" -> {
+            main.post { activity.chooseBackupLocation(requestId) }
+            DEFERRED
+        }
+        "pickRestoreFile" -> {
+            main.post { activity.pickRestoreFile(requestId) }
+            DEFERRED
+        }
+        "applyRestore" -> activity.applyRestore()
+        "checkForUpdate" -> Updater.check()
+        "installUpdate" -> {
+            main.post { activity.installUpdate(requestId) }
+            DEFERRED
+        }
         "segmentSubject" -> {
             val dataUrl = args.getString("image")
             SubjectCutout.maskDataUrl(activity, Base64.decode(dataUrl.substringAfter(','), Base64.DEFAULT))

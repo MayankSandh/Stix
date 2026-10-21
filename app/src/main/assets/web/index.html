@@ -13,8 +13,17 @@
     <header class="topbar">
       <h1>Stix</h1>
       <button class="icon-btn" id="link-btn" aria-label="Make a sticker from a link">🔗</button>
-      <button class="icon-btn" id="help-btn" aria-label="How to use">?</button>
+      <button class="icon-btn" id="settings-btn" aria-label="Settings">⚙</button>
     </header>
+    <div id="update-banner" class="banner" hidden>
+      <span id="update-text"></span>
+      <button class="btn primary" id="update-btn">Update</button>
+    </div>
+    <div id="backup-nudge" class="banner" hidden>
+      <span>Back up your stickers (e.g. to Google Drive) so you never lose them.</span>
+      <button class="btn primary" id="nudge-setup">Set up</button>
+      <button class="icon-btn small" id="nudge-close" aria-label="Not now">✕</button>
+    </div>
     <main id="groups" class="groups"></main>
     <div id="empty" class="empty" hidden>
       <p class="big">No stickers yet</p>
@@ -147,9 +156,32 @@
       <div class="row">
         <span class="spacer"></span>
         <button class="btn text" value="cancel">Cancel</button>
-        <button class="btn danger" value="ok">Delete</button>
+        <button class="btn danger" value="ok" id="confirm-ok">Delete</button>
       </div>
     </form>
+  </dialog>
+
+  <!-- Settings -->
+  <dialog id="settings-dialog" class="sheet">
+    <h3>Settings</h3>
+    <section class="settings-section">
+      <h4>Backup</h4>
+      <p class="hint left" id="backup-status"></p>
+      <div class="sheet-actions">
+        <button class="btn primary wide" id="backup-choose">Set up backup…</button>
+        <button class="btn secondary wide" id="backup-now" hidden>Back up now</button>
+        <button class="btn secondary wide" id="backup-restore">Restore from a backup…</button>
+      </div>
+    </section>
+    <section class="settings-section">
+      <h4>Updates</h4>
+      <p class="hint left" id="version-text"></p>
+      <button class="btn secondary wide" id="update-check">Check for updates</button>
+    </section>
+    <section class="settings-section">
+      <button class="btn text" id="help-btn">How to use Stix</button>
+    </section>
+    <div class="row"><span class="spacer"></span><button class="btn text" data-close>Close</button></div>
   </dialog>
 
   <!-- Help -->
