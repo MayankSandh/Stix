@@ -18,7 +18,8 @@ A free, ad-free Android app that turns any image into WhatsApp stickers and adds
 | `StickerRepository.kt` | Stores packs in the app's private storage, makes WebP stickers and tray icons |
 | `StickerContentProvider.kt` | The interface WhatsApp reads packs from (format defined by [WhatsApp](https://github.com/WhatsApp/stickers)) |
 | `WhatsApp.kt` | Checks whether a pack is already in WhatsApp; builds the "add pack" request |
-| `.github/workflows/build.yml` | Builds the APK in the cloud on every push and publishes it as a GitHub Release |
+| `.github/workflows/build.yml` | Builds the APK in the cloud on every push and publishes it (plus `version.json` for in-app updates) as a GitHub Release |
+| `BackupManager.kt` / `Updater.kt` | Auto-updating backup file; in-app updates from the latest release |
 
 ## One-time setup (personal GitHub account)
 
@@ -49,7 +50,7 @@ A free, ad-free Android app that turns any image into WhatsApp stickers and adds
 
 1. On the phone, open `https://github.com/YOUR_USERNAME/Stix/releases/latest` (sign in if the repo is private).
 2. Tap **Stix.apk**. Android asks you to allow installs from Chrome once. If Play Protect warns about an unknown app, choose **Install anyway**.
-3. To update later, push changes, wait for the build, and repeat. Your stickers are kept.
+3. After that, Stix updates itself: when a newer build is published it shows **Update available → Update** (Android asks you to confirm). Your stickers are kept.
 
 ## Developing
 
