@@ -56,6 +56,7 @@ html, body {
   cursor: pointer;
   color: var(--text);
   background: var(--panel-2);
+  white-space: nowrap;
 }
 .btn:disabled { opacity: .4; cursor: default; }
 .btn.primary { background: var(--accent); color: var(--accent-text); }

@@ -2,6 +2,7 @@ import { call } from './native.js';
 import { CropTool } from './crop.js';
 import { BrushEditor } from './brush.js';
 import { loadImage, cropImage, makeSticker } from './image.js';
+import { findPictures, clearRoundedCorners } from './detect.js';
 import { decodeAnimation, releaseAnimation, firstFrameCanvas, contentRect, drawStickerFrame, encodeAnimatedSticker } from './animated.js';
 
 const $ = (sel) => document.querySelector(sel);
@@ -431,6 +432,32 @@ function goToBrush() {
   pushStep('brush');
 }
 
+/** Finds pictures in a screenshot and lets the user tap one to crop exactly to it. */
+function findImages() {
+  const { rects, background } = findPictures(state.source);
+  if (!rects.length) {
+    toast('No pictures found here. Crop it by hand instead.', 4000);
+    return;
+  }
+  const onPick = (rect) => {
+    $$('[data-crop-mode]').forEach((b) => b.classList.toggle('active', b.dataset.cropMode === 'free'));
+    cropTool.square = false;
+    // In-app images have rounded corners; make those background-coloured corners transparent.
+    if (!state.anim && clearRoundedCorners(state.edited, rect, background)) {
+      state.cropKey = null;
+      cropTool.refresh();
+    }
+  };
+  if (rects.length === 1) {
+    cropTool.onPick = onPick;
+    cropTool.pick(rects[0]);
+    toast('Picture found and selected.', 2500);
+  } else {
+    cropTool.setCandidates(rects, onPick);
+    toast(`Found ${rects.length} pictures. Tap the one you want.`, 4000);
+  }
+}
+
 /** On-device subject detection (ML Kit) on the cropped area; result can be fine-tuned with the brushes. */
 async function magicCutout() {
   const btn = $('#magic-btn');
@@ -595,6 +622,7 @@ function wire() {
     };
   });
   $('#crop-reset').onclick = () => cropTool.reset();
+  $('#find-btn').onclick = () => findImages();
   $('#crop-next').onclick = () => goToBrush();
   $$('[data-action="cancel"]').forEach((b) => { b.onclick = () => closeEditor(); });
 

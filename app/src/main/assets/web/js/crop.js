@@ -21,6 +21,8 @@ export class CropTool {
     this.drag = null;
     this.pinch = null;
     this.anim = null;
+    this.candidates = []; // detected pictures the user can tap to select
+    this.onPick = null;
 
     new ResizeObserver(() => this.layout()).observe(canvas.parentElement);
     canvas.addEventListener('pointerdown', (e) => this.onDown(e));
@@ -52,8 +54,25 @@ export class CropTool {
     this.draw();
   }
 
+  /** Shows numbered boxes; tapping one makes it the crop. */
+  setCandidates(rects, onPick) {
+    this.candidates = rects;
+    this.onPick = onPick;
+    this.draw();
+  }
+
+  /** Makes `rect` (image pixels) the crop and zooms to it. */
+  pick(rect) {
+    this.candidates = [];
+    this.rect = { ...rect };
+    this.zoomToCrop();
+    this.draw();
+    if (this.onPick) this.onPick(rect);
+  }
+
   reset() {
     if (!this.image) return;
+    this.candidates = [];
     const { width: W, height: H } = this.image;
     if (this.square) {
       const s = Math.min(W, H);
@@ -244,7 +263,19 @@ export class CropTool {
     if (this.drag && this.drag.id === e.pointerId) {
       const { handle, changed } = this.drag;
       this.drag = null;
-      if (changed && handle !== 'pan') this.zoomToCrop();
+      if (!changed && this.candidates.length) {
+        // A tap while boxes are shown picks the smallest box under the finger.
+        const p = this.toImage(this.local(e));
+        const hit = this.candidates
+          .filter((r) => p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h)
+          .sort((a, b) => a.w * a.h - b.w * b.h)[0];
+        if (hit) this.pick(hit);
+        return;
+      }
+      if (changed && handle !== 'pan') {
+        if (handle !== 'move') this.candidates = [];
+        this.zoomToCrop();
+      }
     }
   }
 
@@ -394,5 +425,34 @@ export class CropTool {
       ctx.moveTo(L + RW, my - half); ctx.lineTo(L + RW, my + half);
     }
     ctx.stroke();
+
+    this.drawCandidates();
+  }
+
+  drawCandidates() {
+    if (!this.candidates.length) return;
+    const { ctx } = this;
+    const { scale: s, ox, oy } = this.view;
+    ctx.save();
+    ctx.lineWidth = 3;
+    ctx.setLineDash([8, 6]);
+    ctx.font = 'bold 15px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    this.candidates.forEach((r, i) => {
+      const x = ox + r.x * s;
+      const y = oy + r.y * s;
+      ctx.strokeStyle = '#00a884';
+      ctx.strokeRect(x, y, r.w * s, r.h * s);
+      ctx.setLineDash([]);
+      ctx.fillStyle = '#00a884';
+      ctx.beginPath();
+      ctx.arc(x + 16, y + 16, 13, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#0b141a';
+      ctx.fillText(String(i + 1), x + 16, y + 16.5);
+      ctx.setLineDash([8, 6]);
+    });
+    ctx.restore();
   }
 }
