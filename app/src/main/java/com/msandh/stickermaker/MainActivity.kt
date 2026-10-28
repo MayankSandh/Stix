@@ -6,6 +6,7 @@ import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.util.Log
@@ -20,6 +21,7 @@ import android.widget.FrameLayout
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.addCallback
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.IntentCompat
 import androidx.core.view.ViewCompat
@@ -44,6 +46,12 @@ class MainActivity : ComponentActivity() {
 
     @Volatile
     private var pendingSharedUrl: String? = null
+
+    /** Shared file name -> gallery item it was copied from (only for shared images, not links). */
+    private val sharedSources = java.util.concurrent.ConcurrentHashMap<String, Uri>()
+    private var pendingCleanupRequest: String? = null
+    private var pendingCleanupMode: String? = null
+    private var pendingAccessRequest: String? = null
 
     private val pickImage = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         fileCallback?.onReceiveValue(uri?.let { arrayOf(it) })
@@ -98,6 +106,33 @@ class MainActivity : ComponentActivity() {
                 bridge.fail(requestId, e)
             }
         }
+    }
+
+    private val cleanupLauncher = registerForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
+        val requestId = pendingCleanupRequest ?: return@registerForActivityResult
+        pendingCleanupRequest = null
+        val status = when {
+            result.resultCode != Activity.RESULT_OK -> "cancelled"
+            pendingCleanupMode == ScreenshotCleaner.DELETE -> "deleted"
+            else -> "trashed"
+        }
+        bridge.ok(requestId, JSONObject().put("status", status))
+    }
+
+    private val photoPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+        val requestId = pendingAccessRequest ?: return@registerForActivityResult
+        if (ScreenshotCleaner.hasRead(this) && Build.VERSION.SDK_INT >= 31 && !ScreenshotCleaner.hasManageMedia(this)) {
+            mediaManagement.launch(Intent(Settings.ACTION_REQUEST_MANAGE_MEDIA, Uri.parse("package:$packageName")))
+        } else {
+            pendingAccessRequest = null
+            bridge.ok(requestId, ScreenshotCleaner.status(this))
+        }
+    }
+
+    private val mediaManagement = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        val requestId = pendingAccessRequest ?: return@registerForActivityResult
+        pendingAccessRequest = null
+        bridge.ok(requestId, ScreenshotCleaner.status(this))
     }
 
     private val allowInstalls = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
@@ -264,6 +299,7 @@ class MainActivity : ComponentActivity() {
                     contentResolver.openInputStream(uri)?.use { input ->
                         file.outputStream().use { input.copyTo(it) }
                     } ?: throw IllegalStateException(getString(R.string.no_image_shared))
+                    sharedSources[file.name] = uri
                     file
                 }
             }
@@ -294,6 +330,56 @@ class MainActivity : ComponentActivity() {
         sharedDir.listFiles()?.forEach { it.delete() }
         val url = MediaFetcher.firstUrl(link) ?: throw IllegalArgumentException("That doesn't look like a link.")
         return "/shared/${MediaFetcher.download(url, sharedDir).name}"
+    }
+
+    /** Sets up prompt-free cleanup: photo access, then the "Media management" switch. Asked once. */
+    fun grantScreenshotAccess(requestId: String) {
+        ScreenshotCleaner.markSetupOffered(this)
+        pendingAccessRequest = requestId
+        when {
+            !ScreenshotCleaner.hasRead(this) -> photoPermission.launch(ScreenshotCleaner.readPermission())
+            Build.VERSION.SDK_INT >= 31 && !ScreenshotCleaner.hasManageMedia(this) ->
+                mediaManagement.launch(Intent(Settings.ACTION_REQUEST_MANAGE_MEDIA, Uri.parse("package:$packageName")))
+            else -> {
+                pendingAccessRequest = null
+                bridge.ok(requestId, ScreenshotCleaner.status(this))
+            }
+        }
+    }
+
+    /**
+     * Called after a sticker was saved from a shared image. Replies with status:
+     * kept | skipped (not a screenshot / unsupported) | setup (offer one-time access first) |
+     * trashed | deleted | cancelled.
+     */
+    fun cleanupShared(requestId: String, url: String, allowPrompt: Boolean) {
+        fun reply(status: String) = bridge.ok(requestId, JSONObject().put("status", status))
+        val mode = ScreenshotCleaner.mode(this)
+        val source = sharedSources[url.substringAfterLast('/')]
+        if (mode == ScreenshotCleaner.KEEP) return reply("kept")
+        if (source == null || Build.VERSION.SDK_INT < 30) return reply("skipped")
+        val silent = ScreenshotCleaner.hasSilentAccess(this)
+        if (!silent && !allowPrompt && !ScreenshotCleaner.setupOffered(this)) return reply("setup")
+        bridge.runInBackground {
+            val target = try {
+                ScreenshotCleaner.findScreenshot(this, source)
+            } catch (e: Exception) {
+                Log.w(TAG, "Couldn't find the shared screenshot", e)
+                null
+            }
+            runOnUiThread {
+                if (target == null) return@runOnUiThread reply("skipped")
+                try {
+                    pendingCleanupRequest = requestId
+                    pendingCleanupMode = mode
+                    cleanupLauncher.launch(IntentSenderRequest.Builder(ScreenshotCleaner.request(this, target, mode)).build())
+                    sharedSources.remove(url.substringAfterLast('/'))
+                } catch (e: Exception) {
+                    pendingCleanupRequest = null
+                    bridge.fail(requestId, e)
+                }
+            }
+        }
     }
 
     /** Hands the most recently shared image to the editor once. */

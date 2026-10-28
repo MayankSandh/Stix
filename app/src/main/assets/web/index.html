@@ -173,6 +173,17 @@
         <button class="btn secondary wide" id="backup-restore">Restore from a backup…</button>
       </div>
     </section>
+    <section class="settings-section" id="shots-section">
+      <h4>Shared screenshots</h4>
+      <p class="hint left">After saving a sticker from a screenshot you shared to Stix:</p>
+      <div class="segmented wide-seg" role="group" aria-label="Screenshot cleanup">
+        <button data-shot-mode="trash">Move to trash</button>
+        <button data-shot-mode="delete">Delete</button>
+        <button data-shot-mode="keep">Keep</button>
+      </div>
+      <p class="hint left" id="shots-status"></p>
+      <button class="btn secondary wide" id="shots-grant" hidden>Allow without asking (one time)</button>
+    </section>
     <section class="settings-section">
       <h4>Updates</h4>
       <p class="hint left" id="version-text"></p>
@@ -182,6 +193,18 @@
       <button class="btn text" id="help-btn">How to use Stix</button>
     </section>
     <div class="row"><span class="spacer"></span><button class="btn text" data-close>Close</button></div>
+  </dialog>
+
+  <!-- One-time screenshot cleanup setup -->
+  <dialog id="shots-dialog" class="sheet">
+    <h3>Clean up screenshots automatically?</h3>
+    <p>Stix can move the screenshot to the trash after you save a sticker from it (recoverable for 30 days). Change this any time in ⚙ Settings.</p>
+    <p class="hint left">To do it without asking every time, Android needs two one-time permissions: <b>photo access</b> (choose <i>Allow all</i>) and <b>Media management</b> (turn the switch on, then go back).</p>
+    <div class="sheet-actions">
+      <button class="btn primary wide" id="shots-setup">Set up (one time)</button>
+      <button class="btn secondary wide" id="shots-ask">Ask me each time instead</button>
+      <button class="btn text" id="shots-keep">Keep my screenshots</button>
+    </div>
   </dialog>
 
   <!-- Help -->

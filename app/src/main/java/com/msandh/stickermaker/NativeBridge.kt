@@ -81,6 +81,25 @@ class NativeBridge(
         "getSettings" -> JSONObject()
             .put("versionName", BuildConfig.VERSION_NAME)
             .put("backup", BackupManager.get(activity).status())
+            .put("screenshots", ScreenshotCleaner.status(activity))
+        "setScreenshotMode" -> {
+            ScreenshotCleaner.setMode(activity, args.getString("mode"))
+            ScreenshotCleaner.status(activity)
+        }
+        "skipScreenshotSetup" -> {
+            ScreenshotCleaner.markSetupOffered(activity)
+            null
+        }
+        "grantScreenshotAccess" -> {
+            main.post { activity.grantScreenshotAccess(requestId) }
+            DEFERRED
+        }
+        "cleanupShared" -> {
+            val url = args.getString("url")
+            val allowPrompt = args.optBoolean("allowPrompt", false)
+            main.post { activity.cleanupShared(requestId, url, allowPrompt) }
+            DEFERRED
+        }
         "backupNow" -> BackupManager.get(activity).backupNow()
         "chooseBackupLocation" -> {
             main.post { activity.chooseBackupLocation(requestId) }

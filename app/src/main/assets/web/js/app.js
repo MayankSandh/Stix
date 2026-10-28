@@ -27,6 +27,7 @@ const state = {
   stickerCanvas: null,
   anim: null, // { frames, width, height } when editing a GIF / video
   previewTimer: null,
+  sourceUrl: null, // set when the image was shared to Stix (so its screenshot can be cleaned up)
   depth: 0,
   afterHome: null,
   // sticker dialog
@@ -133,7 +134,77 @@ async function renderSettings() {
   $('#backup-choose').classList.toggle('secondary', !!b.location);
   $('#backup-now').hidden = !b.location;
   $('#version-text').textContent = `You're on Stix ${settings.versionName}.`;
+  renderShotSettings(settings.screenshots);
   return settings;
+}
+
+// ---------- shared screenshot cleanup ----------
+
+function renderShotSettings(shots) {
+  $('#shots-section').hidden = !shots.supported;
+  $$('[data-shot-mode]').forEach((b) => b.classList.toggle('active', b.dataset.shotMode === shots.mode));
+  let text = '';
+  if (shots.mode !== 'keep') {
+    if (shots.silent) text = '✓ Happens automatically, without asking.';
+    else if (shots.canBeSilent) text = 'Android will ask each time. Allow it once below to skip that.';
+    else text = 'Android will ask each time (your Android version requires it).';
+  }
+  $('#shots-status').textContent = text;
+  $('#shots-grant').hidden = shots.mode === 'keep' || shots.silent || !shots.canBeSilent;
+}
+
+async function setShotMode(mode) {
+  const shots = await call('setScreenshotMode', { mode });
+  renderShotSettings(shots);
+}
+
+async function grantShotAccess() {
+  const shots = await call('grantScreenshotAccess');
+  if ($('#settings-dialog').open) renderShotSettings(shots);
+  if (shots.silent) toast('Done. Screenshots will be cleaned up without asking.', 4000);
+  else if (!shots.photoAccess) toast('Photo access wasn’t allowed (choose “Allow all”). Android will ask each time instead.', 6000);
+  else toast('Media management wasn’t switched on. Android will ask each time instead.', 6000);
+  return shots;
+}
+
+
+/** Shows the one-time choice. Resolves to 'setup' | 'ask' | 'keep' | null (dismissed). */
+function askShotSetup() {
+  const dialog = $('#shots-dialog');
+  dialog.showModal();
+  return new Promise((resolve) => {
+    const finish = (choice) => { dialog.close(); resolve(choice); };
+    $('#shots-setup').onclick = () => finish('setup');
+    $('#shots-ask').onclick = () => finish('ask');
+    $('#shots-keep').onclick = () => finish('keep');
+    dialog.addEventListener('close', () => resolve(null), { once: true });
+  });
+}
+
+const CLEANUP_MESSAGES = {
+  trashed: 'Screenshot moved to trash.',
+  deleted: 'Screenshot deleted.',
+};
+
+/** Cleans up the shared screenshot per the user's setting; returns a short message or null. */
+async function cleanupScreenshot(url) {
+  try {
+    let result = await call('cleanupShared', { url });
+    if (result.status === 'setup') {
+      const choice = await askShotSetup();
+      if (choice === 'keep') {
+        await call('setScreenshotMode', { mode: 'keep' });
+        return 'Screenshots will be kept (change this in ⚙ Settings).';
+      }
+      if (choice === null) return null; // dismissed: ask again next time, leave the screenshot
+      if (choice === 'setup') await grantShotAccess();
+      else await call('skipScreenshotSetup');
+      result = await call('cleanupShared', { url, allowPrompt: true });
+    }
+    return CLEANUP_MESSAGES[result.status] || null;
+  } catch (err) {
+    return `Couldn’t clean up the screenshot: ${errorMessage(err)}`;
+  }
 }
 
 async function chooseBackupLocation() {
@@ -504,6 +575,7 @@ function showHome() {
   state.anim = null;
   state.depth = 0;
   state.source = null;
+  state.sourceUrl = null;
   state.edited = null;
   state.step = null;
   $('#editor').hidden = true;
@@ -679,12 +751,19 @@ async function saveSticker() {
   await refresh();
   maybeNudgeBackup().catch(() => {});
   const pack = state.packs.find((p) => p.id === groupId);
-  closeEditor(() => {
+  const sourceUrl = state.sourceUrl;
+  closeEditor(async () => {
     if (!pack) return;
     const count = pack.stickers.length;
-    if (pack.inWhatsApp) toast(`Saved to “${pack.name}”. It will show up in WhatsApp.`, 4000);
-    else if (count < state.minStickers) toast(`Saved. Add ${state.minStickers - count} more to “${pack.name}” to use it in WhatsApp.`, 4000);
-    else toast(`Saved. Tap “Add to WhatsApp” under “${pack.name}”.`, 4000);
+    let message;
+    if (pack.inWhatsApp) message = `Saved to “${pack.name}”. It will show up in WhatsApp.`;
+    else if (count < state.minStickers) message = `Saved. Add ${state.minStickers - count} more to “${pack.name}” to use it in WhatsApp.`;
+    else message = `Saved. Tap “Add to WhatsApp” under “${pack.name}”.`;
+    toast(message, 4000);
+    if (sourceUrl) {
+      const cleaned = await cleanupScreenshot(sourceUrl);
+      if (cleaned) toast(`${message} ${cleaned}`, 4500);
+    }
   });
 }
 
@@ -699,12 +778,16 @@ function blobToDataUrl(blob) {
 
 // ---------- images shared from other apps / links ----------
 
-async function openFromUrl(url) {
+async function openFromUrl(url, { shared = false } = {}) {
   const blob = await (await fetch(url)).blob();
-  if (!$('#editor').hidden) closeEditor(() => openEditor(blob));
+  const open = async () => {
+    await openEditor(blob);
+    state.sourceUrl = shared && state.source ? url : null;
+  };
+  if (!$('#editor').hidden) closeEditor(open);
   else {
     $$('dialog[open]').forEach((d) => d.close());
-    await openEditor(blob);
+    await open();
   }
 }
 
@@ -721,7 +804,7 @@ async function fromLink() {
 
 async function receiveShared() {
   const url = await call('takeSharedImage');
-  if (url) await openFromUrl(url);
+  if (url) await openFromUrl(url, { shared: true });
 }
 
 // ---------- wiring ----------
@@ -737,6 +820,8 @@ function wire() {
   $('#help-btn').onclick = () => { $('#settings-dialog').close(); $('#help-dialog').showModal(); };
   $('#settings-btn').onclick = () => openSettings().catch((err) => toast(errorMessage(err)));
   $('#backup-choose').onclick = () => chooseBackupLocation();
+  $$('[data-shot-mode]').forEach((b) => { b.onclick = () => setShotMode(b.dataset.shotMode).catch((err) => toast(errorMessage(err))); });
+  $('#shots-grant').onclick = () => grantShotAccess().catch((err) => toast(errorMessage(err)));
   $('#backup-now').onclick = () => backupNow();
   $('#backup-restore').onclick = () => restoreFromBackup();
   $('#update-check').onclick = () => checkForUpdate();

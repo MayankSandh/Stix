@@ -316,3 +316,5 @@ dialog.sheet li { margin-bottom: 10px; }
 .settings-section { margin: 4px 0 18px; }
 .settings-section h4 { margin: 0 0 6px; color: var(--muted); font-size: 13px; text-transform: uppercase; letter-spacing: .05em; }
 .hint.left { text-align: left; margin-bottom: 10px; font-size: 14px; }
+.segmented.wide-seg { display: flex; margin-bottom: 8px; }
+.segmented.wide-seg button { flex: 1; padding: 8px 6px; font-size: 14px; }
