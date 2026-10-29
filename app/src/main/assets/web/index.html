@@ -46,13 +46,19 @@
         <button class="btn text strong" id="crop-next">Next</button>
       </header>
       <div class="stage" id="crop-stage"><canvas id="crop-canvas"></canvas></div>
-      <footer class="toolbar">
-        <div class="segmented" role="group" aria-label="Crop shape">
-          <button data-crop-mode="free" class="active">Free</button>
-          <button data-crop-mode="square">Square</button>
+      <footer class="toolbar column">
+        <div class="row">
+          <div class="segmented" role="group" aria-label="Crop shape">
+            <button data-crop-mode="free" class="active">Free</button>
+            <button data-crop-mode="square">Square</button>
+          </div>
+          <span class="spacer"></span>
+          <button class="btn text" id="crop-reset">Reset</button>
         </div>
-        <button class="btn secondary" id="find-btn">✨ Find</button>
-        <button class="btn text" id="crop-reset">Reset</button>
+        <div class="row">
+          <button class="btn secondary grow" id="find-btn">✨ Find</button>
+          <button class="btn secondary grow" id="lens-btn">🔎 Search on Lens</button>
+        </div>
       </footer>
     </div>
 
@@ -207,11 +213,22 @@
     </div>
   </dialog>
 
+  <!-- Link copied in Lens -->
+  <dialog id="clip-dialog" class="sheet small">
+    <h3>Use the copied link?</h3>
+    <p class="hint left" id="clip-link"></p>
+    <div class="sheet-actions">
+      <button class="btn primary wide" id="clip-use">Make GIF sticker</button>
+      <button class="btn text" data-close>Not now</button>
+    </div>
+  </dialog>
+
   <!-- Help -->
   <dialog id="help-dialog" class="sheet">
     <h3>How to use</h3>
     <ol>
       <li><b>Make a sticker:</b> tap <b>New sticker</b>, or share an image to <i>Stix</i> from any app (Chrome, Instagram, Gallery…). Crop it, erase the background if you like, and save it to a group.</li>
+      <li><b>Found a GIF on Instagram?</b> Screenshot it, share to <i>Stix</i>, tap <b>✨ Find</b> to box it, then <b>🔎 Search on Lens</b>. Open the matching GIPHY/Tenor result and share it to Stix (or copy its link and come back).</li>
       <li><b>GIF stickers:</b> share a GIF (or a link to one, e.g. from Google Images, Tenor or Giphy) to <i>Stix</i>, or tap 🔗 and paste the link. Crop it and save it to a GIF group. WhatsApp keeps animated and still stickers in separate packs.</li>
       <li><b>Groups are sticker packs:</b> once a group has at least 3 stickers, tap <b>Add to WhatsApp</b>. The pack then shows up in WhatsApp's sticker panel.</li>
       <li><b>Changes sync:</b> stickers you add to a pack later appear in WhatsApp automatically (it can take a moment, or reopen the sticker panel).</li>

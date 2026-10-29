@@ -53,6 +53,10 @@ class MainActivity : ComponentActivity() {
     private var pendingCleanupMode: String? = null
     private var pendingAccessRequest: String? = null
 
+    /** Set while the user is looking something up in Lens; the clipboard is checked on return. */
+    private var lensStartedAt = 0L
+    private var clipboardBaseline: String? = null
+
     private val pickImage = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         fileCallback?.onReceiveValue(uri?.let { arrayOf(it) })
         fileCallback = null
@@ -332,6 +336,66 @@ class MainActivity : ComponentActivity() {
         return "/shared/${MediaFetcher.download(url, sharedDir).name}"
     }
 
+    /**
+     * Sends the boxed area to Google Lens (via the Google app), falling back to the Share menu.
+     * Remembers the clipboard so a link copied in Lens can be offered on return.
+     */
+    fun searchOnLens(requestId: String, png: ByteArray) {
+        try {
+            val dir = File(cacheDir, "lens").apply { mkdirs() }
+            dir.listFiles()?.forEach { it.delete() }
+            val file = File(dir, "lens-${System.currentTimeMillis()}.png").apply { writeBytes(png) }
+            val uri = androidx.core.content.FileProvider.getUriForFile(this, "$packageName.files", file)
+            val send = Intent(Intent.ACTION_SEND)
+                .setType("image/png")
+                .putExtra(Intent.EXTRA_STREAM, uri)
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            send.clipData = android.content.ClipData.newRawUri("", uri)
+            clipboardBaseline = clipboardText()
+            lensStartedAt = System.currentTimeMillis()
+            var via = "lens"
+            val launched = LENS_APPS.any { pkg ->
+                try {
+                    startActivity(Intent(send).setPackage(pkg))
+                    true
+                } catch (e: ActivityNotFoundException) {
+                    false
+                }
+            }
+            if (!launched) {
+                via = "share"
+                startActivity(Intent.createChooser(send, getString(R.string.search_on_lens)))
+            }
+            bridge.ok(requestId, JSONObject().put("via", via))
+        } catch (e: Exception) {
+            lensStartedAt = 0L
+            bridge.fail(requestId, e)
+        }
+    }
+
+    private fun clipboardText(): String? = try {
+        val clip = (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager).primaryClip
+        if (clip != null && clip.itemCount > 0) clip.getItemAt(0).coerceToText(this)?.toString() else null
+    } catch (e: Exception) {
+        Log.w(TAG, "Can't read clipboard", e)
+        null
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        // Android only lets the focused app read the clipboard, so check here, and only after a Lens search.
+        if (!hasFocus || lensStartedAt == 0L || !::webView.isInitialized) return
+        if (System.currentTimeMillis() - lensStartedAt > LENS_WINDOW_MS) {
+            lensStartedAt = 0L
+            return
+        }
+        val text = clipboardText() ?: return
+        if (text == clipboardBaseline) return
+        clipboardBaseline = text
+        val link = MediaFetcher.firstUrl(text) ?: return
+        webView.evaluateJavascript("window.onClipboardLink && window.onClipboardLink(${JSONObject.quote(link)})", null)
+    }
+
     /** Sets up prompt-free cleanup: photo access, then the "Media management" switch. Asked once. */
     fun grantScreenshotAccess(requestId: String) {
         ScreenshotCleaner.markSetupOffered(this)
@@ -464,6 +528,9 @@ class MainActivity : ComponentActivity() {
     companion object {
         private const val TAG = "Stix"
         private const val APP_HOST = "appassets.androidplatform.net"
+        private const val LENS_WINDOW_MS = 20 * 60 * 1000L
+        /** Google app (hosts Lens for shared images), then the standalone Lens app. */
+        private val LENS_APPS = listOf("com.google.android.googlequicksearchbox", "com.google.ar.lens")
         private const val START_URL = "https://$APP_HOST/assets/web/index.html"
     }
 }

@@ -318,3 +318,5 @@ dialog.sheet li { margin-bottom: 10px; }
 .hint.left { text-align: left; margin-bottom: 10px; font-size: 14px; }
 .segmented.wide-seg { display: flex; margin-bottom: 8px; }
 .segmented.wide-seg button { flex: 1; padding: 8px 6px; font-size: 14px; }
+.btn.grow { flex: 1; }
+#clip-link { word-break: break-all; }

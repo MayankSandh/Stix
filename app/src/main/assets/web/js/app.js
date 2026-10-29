@@ -28,6 +28,7 @@ const state = {
   anim: null, // { frames, width, height } when editing a GIF / video
   previewTimer: null,
   sourceUrl: null, // set when the image was shared to Stix (so its screenshot can be cleaned up)
+  lens: null, // { sourceUrl, at } while looking a screenshot up in Lens
   depth: 0,
   afterHome: null,
   // sticker dialog
@@ -778,11 +779,23 @@ function blobToDataUrl(blob) {
 
 // ---------- images shared from other apps / links ----------
 
-async function openFromUrl(url, { shared = false } = {}) {
+const LENS_WINDOW_MS = 20 * 60 * 1000;
+
+/** The screenshot looked up in Lens, if a link is likely the result of that search (one use). */
+function takeLensSource() {
+  const lens = state.lens;
+  state.lens = null;
+  return lens && Date.now() - lens.at < LENS_WINDOW_MS ? lens.sourceUrl : null;
+}
+
+async function openFromUrl(url, { shared = false, fromLink = false } = {}) {
   const blob = await (await fetch(url)).blob();
+  // A GIF found via Lens replaces the screenshot; that screenshot is what gets cleaned up.
+  const lensSource = fromLink || !blob.type.match(/^image\/(png|jpe?g|heic|heif)$/) ? takeLensSource() : null;
   const open = async () => {
     await openEditor(blob);
-    state.sourceUrl = shared && state.source ? url : null;
+    if (!state.source) return;
+    state.sourceUrl = lensSource || (shared ? url : null);
   };
   if (!$('#editor').hidden) closeEditor(open);
   else {
@@ -794,12 +807,41 @@ async function openFromUrl(url, { shared = false } = {}) {
 async function fromLink() {
   const link = await askText('Paste a link to a GIF or image', '', { maxLength: 4000, placeholder: 'https://…' });
   if (!link) return;
+  await openLink(link);
+}
+
+async function openLink(link) {
   try {
     const url = await withBusy(() => call('fetchMedia', { url: link }), 'Downloading…');
-    await openFromUrl(url);
+    await openFromUrl(url, { fromLink: true });
   } catch (err) {
     toast(errorMessage(err), 6000);
   }
+}
+
+/** Sends the boxed area to Google Lens to find the original GIF online. */
+async function searchOnLens() {
+  if (!state.source) return;
+  const crop = cropTool.getCrop();
+  const image = cropImage(state.source, crop).toDataURL('image/png');
+  try {
+    const result = await call('searchOnLens', { image });
+    state.lens = { sourceUrl: state.sourceUrl, at: Date.now() };
+    if (result.via === 'share') toast('Pick Google Lens (or another search app) from the list.', 4000);
+  } catch (err) {
+    toast(errorMessage(err), 5000);
+  }
+}
+
+/** Android calls this when you come back from Lens with a new link on the clipboard. */
+function offerClipboardLink(link) {
+  const dialog = $('#clip-dialog');
+  $('#clip-link').textContent = link;
+  $('#clip-use').onclick = () => {
+    dialog.close();
+    openLink(link);
+  };
+  if (!dialog.open) dialog.showModal();
 }
 
 async function receiveShared() {
@@ -842,6 +884,7 @@ function wire() {
   });
   $('#crop-reset').onclick = () => cropTool.reset();
   $('#find-btn').onclick = () => findImages();
+  $('#lens-btn').onclick = () => searchOnLens();
   $('#crop-next').onclick = () => goToBrush();
   $$('[data-action="cancel"]').forEach((b) => { b.onclick = () => closeEditor(); });
 
@@ -901,6 +944,7 @@ function wire() {
   });
 
   window.onSharedImage = () => receiveShared().catch((err) => toast(errorMessage(err)));
+  window.onClipboardLink = (link) => offerClipboardLink(link);
 }
 
 async function main() {

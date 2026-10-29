@@ -94,6 +94,11 @@ class NativeBridge(
             main.post { activity.grantScreenshotAccess(requestId) }
             DEFERRED
         }
+        "searchOnLens" -> {
+            val png = args.getString("image").fromDataUrl()
+            main.post { activity.searchOnLens(requestId, png) }
+            DEFERRED
+        }
         "cleanupShared" -> {
             val url = args.getString("url")
             val allowPrompt = args.optBoolean("allowPrompt", false)

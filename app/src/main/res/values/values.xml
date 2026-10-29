@@ -6,6 +6,7 @@
     <string name="crash_message">A report was saved. Sharing it (for example to your own WhatsApp chat, then pasting it to whoever maintains Stix) helps fix the problem. It contains the error details and your phone model, not your stickers.</string>
     <string name="crash_share">Share report</string>
     <string name="crash_continue">Continue</string>
+    <string name="search_on_lens">Search with Google Lens</string>
     <string name="downloading">Getting it from the link…</string>
     <string name="no_image_shared">No image came through. Try sharing the image itself (long-press it → Share).</string>
     <string name="whatsapp_missing">WhatsApp isn\'t installed on this phone.</string>
