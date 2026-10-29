@@ -27,8 +27,7 @@ const state = {
   stickerCanvas: null,
   anim: null, // { frames, width, height } when editing a GIF / video
   previewTimer: null,
-  sourceUrl: null, // set when the image was shared to Stix (so its screenshot can be cleaned up)
-  lens: null, // { sourceUrl, at } while looking a screenshot up in Lens
+  sourceUrl: null, // set for shared/linked items; Android knows which screenshot (if any) it belongs to
   depth: 0,
   afterHome: null,
   // sticker dialog
@@ -525,9 +524,12 @@ function showStep(step) {
   }
 }
 
+// History entries from before a page reload must not reopen editor steps.
+const PAGE_SESSION = Math.random().toString(36).slice(2);
+
 function pushStep(step) {
   state.depth += 1;
-  history.pushState({ step, depth: state.depth }, '');
+  history.pushState({ step, depth: state.depth, session: PAGE_SESSION }, '');
   showStep(step);
 }
 
@@ -587,7 +589,7 @@ function showHome() {
 }
 
 window.addEventListener('popstate', (e) => {
-  const step = e.state && e.state.step;
+  const step = e.state && e.state.session === PAGE_SESSION && e.state.step;
   if (step && state.source) {
     state.depth = e.state.depth;
     showStep(step);
@@ -779,23 +781,12 @@ function blobToDataUrl(blob) {
 
 // ---------- images shared from other apps / links ----------
 
-const LENS_WINDOW_MS = 20 * 60 * 1000;
-
-/** The screenshot looked up in Lens, if a link is likely the result of that search (one use). */
-function takeLensSource() {
-  const lens = state.lens;
-  state.lens = null;
-  return lens && Date.now() - lens.at < LENS_WINDOW_MS ? lens.sourceUrl : null;
-}
-
 async function openFromUrl(url, { shared = false, fromLink = false } = {}) {
   const blob = await (await fetch(url)).blob();
-  // A GIF found via Lens replaces the screenshot; that screenshot is what gets cleaned up.
-  const lensSource = fromLink || !blob.type.match(/^image\/(png|jpe?g|heic|heif)$/) ? takeLensSource() : null;
   const open = async () => {
     await openEditor(blob);
-    if (!state.source) return;
-    state.sourceUrl = lensSource || (shared ? url : null);
+    // Android remembers which screenshot this came from (directly, or via a Lens search).
+    if (state.source) state.sourceUrl = shared || fromLink ? url : null;
   };
   if (!$('#editor').hidden) closeEditor(open);
   else {
@@ -825,8 +816,7 @@ async function searchOnLens() {
   const crop = cropTool.getCrop();
   const image = cropImage(state.source, crop).toDataURL('image/png');
   try {
-    const result = await call('searchOnLens', { image });
-    state.lens = { sourceUrl: state.sourceUrl, at: Date.now() };
+    const result = await call('searchOnLens', { image, sourceUrl: state.sourceUrl });
     if (result.via === 'share') toast('Pick Google Lens (or another search app) from the list.', 4000);
   } catch (err) {
     toast(errorMessage(err), 5000);
@@ -834,6 +824,11 @@ async function searchOnLens() {
 }
 
 /** Android calls this when you come back from Lens with a new link on the clipboard. */
+async function checkClipboardLink() {
+  const link = await call('takeClipboardLink');
+  if (link) offerClipboardLink(link);
+}
+
 function offerClipboardLink(link) {
   const dialog = $('#clip-dialog');
   $('#clip-link').textContent = link;
@@ -944,7 +939,7 @@ function wire() {
   });
 
   window.onSharedImage = () => receiveShared().catch((err) => toast(errorMessage(err)));
-  window.onClipboardLink = (link) => offerClipboardLink(link);
+  window.onClipboardLink = () => checkClipboardLink().catch(() => {});
 }
 
 async function main() {
@@ -960,6 +955,7 @@ async function main() {
     $('#help-dialog').showModal();
   }
   await receiveShared().catch((err) => toast(errorMessage(err)));
+  await checkClipboardLink().catch(() => {});
   checkForUpdate({ quiet: true });
   maybeNudgeBackup().catch(() => {});
 }

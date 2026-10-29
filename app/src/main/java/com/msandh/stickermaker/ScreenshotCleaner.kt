@@ -27,6 +27,10 @@ object ScreenshotCleaner {
     private const val PREFS = "screenshots"
     private const val KEY_MODE = "mode"
     private const val KEY_SETUP_OFFERED = "setupOffered"
+    private const val KEY_LINKS = "links"
+    private const val KEY_LENS = "lens"
+    private const val LINK_MAX_AGE_MS = 24 * 60 * 60 * 1000L
+    const val LENS_WINDOW_MS = 20 * 60 * 1000L
 
     private fun prefs(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
@@ -40,6 +44,69 @@ object ScreenshotCleaner {
     fun setupOffered(context: Context) = prefs(context).getBoolean(KEY_SETUP_OFFERED, false)
 
     fun markSetupOffered(context: Context) = prefs(context).edit().putBoolean(KEY_SETUP_OFFERED, true).apply()
+
+    // ---- Which screenshot each shared item came from ----
+    // Saved to disk (not memory) because Android often closes Stix while you're in Lens/Chrome.
+
+    private fun links(context: Context): JSONObject =
+        runCatching { JSONObject(prefs(context).getString(KEY_LINKS, "{}") ?: "{}") }.getOrDefault(JSONObject())
+
+    /** Remembers that the shared file [fileName] came from (or was found via) the screenshot [shot]. */
+    @Synchronized
+    fun remember(context: Context, fileName: String, shot: Uri) {
+        val all = links(context)
+        val now = System.currentTimeMillis()
+        all.keys().asSequence().toList().forEach { key ->
+            if (now - (all.optJSONObject(key)?.optLong("at") ?: 0L) > LINK_MAX_AGE_MS) all.remove(key)
+        }
+        all.put(fileName, JSONObject().put("uri", shot.toString()).put("at", now))
+        prefs(context).edit().putString(KEY_LINKS, all.toString()).apply()
+    }
+
+    @Synchronized
+    fun lookup(context: Context, fileName: String): Uri? =
+        links(context).optJSONObject(fileName)?.optString("uri")?.takeIf { it.isNotEmpty() }?.let(Uri::parse)
+
+    /** Forgets [shot] everywhere (after it was cleaned up or the user chose to keep it). */
+    @Synchronized
+    fun forget(context: Context, shot: Uri) {
+        val all = links(context)
+        all.keys().asSequence().toList().forEach { key ->
+            if (all.optJSONObject(key)?.optString("uri") == shot.toString()) all.remove(key)
+        }
+        val editor = prefs(context).edit().putString(KEY_LINKS, all.toString())
+        if (lens(context)?.optString("uri") == shot.toString()) editor.remove(KEY_LENS)
+        editor.apply()
+    }
+
+    // ---- Lens search in progress ----
+
+    private fun lens(context: Context): JSONObject? = prefs(context).getString(KEY_LENS, null)?.let {
+        runCatching { JSONObject(it) }.getOrNull()
+    }?.takeIf { System.currentTimeMillis() - it.optLong("at") < LENS_WINDOW_MS }
+
+    /** Starts a Lens search for [shot] (may be null if the image wasn't a shared screenshot). */
+    @Synchronized
+    fun startLens(context: Context, shot: Uri?, clipboard: String?) {
+        val session = JSONObject().put("at", System.currentTimeMillis()).put("clip", clipboard ?: "")
+        if (shot != null) session.put("uri", shot.toString())
+        prefs(context).edit().putString(KEY_LENS, session.toString()).apply()
+    }
+
+    fun lensActive(context: Context) = lens(context) != null
+
+    /** The screenshot being looked up in Lens, if a search is in progress. */
+    fun lensShot(context: Context): Uri? =
+        lens(context)?.optString("uri")?.takeIf { it.isNotEmpty() }?.let(Uri::parse)
+
+    /** Returns true (once) if [text] is new on the clipboard since the Lens search started. */
+    @Synchronized
+    fun isNewClipboard(context: Context, text: String): Boolean {
+        val session = lens(context) ?: return false
+        if (session.optString("clip") == text) return false
+        prefs(context).edit().putString(KEY_LENS, session.put("clip", text).toString()).apply()
+        return true
+    }
 
     /** Android 11+ is needed for trash; 12+ for prompt-free cleanup. */
     fun supported() = Build.VERSION.SDK_INT >= 30

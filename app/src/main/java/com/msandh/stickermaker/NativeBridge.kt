@@ -78,6 +78,7 @@ class NativeBridge(
             DEFERRED
         }
         "takeSharedImage" -> activity.takeSharedImageUrl()
+        "takeClipboardLink" -> activity.takeClipboardLink()
         "getSettings" -> JSONObject()
             .put("versionName", BuildConfig.VERSION_NAME)
             .put("backup", BackupManager.get(activity).status())
@@ -96,7 +97,8 @@ class NativeBridge(
         }
         "searchOnLens" -> {
             val png = args.getString("image").fromDataUrl()
-            main.post { activity.searchOnLens(requestId, png) }
+            val sourceUrl = args.optString("sourceUrl").ifEmpty { null }
+            main.post { activity.searchOnLens(requestId, png, sourceUrl) }
             DEFERRED
         }
         "cleanupShared" -> {

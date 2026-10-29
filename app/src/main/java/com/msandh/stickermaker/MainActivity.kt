@@ -47,15 +47,12 @@ class MainActivity : ComponentActivity() {
     @Volatile
     private var pendingSharedUrl: String? = null
 
-    /** Shared file name -> gallery item it was copied from (only for shared images, not links). */
-    private val sharedSources = java.util.concurrent.ConcurrentHashMap<String, Uri>()
+    @Volatile
+    private var pendingClipboardLink: String? = null
     private var pendingCleanupRequest: String? = null
     private var pendingCleanupMode: String? = null
     private var pendingAccessRequest: String? = null
 
-    /** Set while the user is looking something up in Lens; the clipboard is checked on return. */
-    private var lensStartedAt = 0L
-    private var clipboardBaseline: String? = null
 
     private val pickImage = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         fileCallback?.onReceiveValue(uri?.let { arrayOf(it) })
@@ -303,13 +300,21 @@ class MainActivity : ComponentActivity() {
                     contentResolver.openInputStream(uri)?.use { input ->
                         file.outputStream().use { input.copyTo(it) }
                     } ?: throw IllegalStateException(getString(R.string.no_image_shared))
-                    sharedSources[file.name] = uri
+                    // Note the gallery screenshot now, while Stix still has access to it.
+                    val shot = if (Build.VERSION.SDK_INT >= 30) {
+                        runCatching { ScreenshotCleaner.findScreenshot(this, uri) }
+                            .onFailure { Log.w(TAG, "Couldn't identify shared screenshot", it) }
+                            .getOrNull()
+                    } else {
+                        null
+                    }
+                    if (shot != null) ScreenshotCleaner.remember(this, file.name, shot) else inheritLensScreenshot(file)
                     file
                 }
             }
             link != null -> {
                 Toast.makeText(this, R.string.downloading, Toast.LENGTH_SHORT).show()
-                deliverShared { MediaFetcher.download(link, sharedDir) }
+                deliverShared { MediaFetcher.download(link, sharedDir).also { inheritLensScreenshot(it) } }
             }
             else -> Toast.makeText(this, R.string.no_image_shared, Toast.LENGTH_LONG).show()
         }
@@ -333,14 +338,21 @@ class MainActivity : ComponentActivity() {
     fun downloadToShared(link: String): String {
         sharedDir.listFiles()?.forEach { it.delete() }
         val url = MediaFetcher.firstUrl(link) ?: throw IllegalArgumentException("That doesn't look like a link.")
-        return "/shared/${MediaFetcher.download(url, sharedDir).name}"
+        val file = MediaFetcher.download(url, sharedDir)
+        inheritLensScreenshot(file)
+        return "/shared/${file.name}"
+    }
+
+    /** A GIF/link that arrives during a Lens search belongs to the screenshot being searched. */
+    private fun inheritLensScreenshot(file: File) {
+        ScreenshotCleaner.lensShot(this)?.let { ScreenshotCleaner.remember(this, file.name, it) }
     }
 
     /**
      * Sends the boxed area to Google Lens (via the Google app), falling back to the Share menu.
      * Remembers the clipboard so a link copied in Lens can be offered on return.
      */
-    fun searchOnLens(requestId: String, png: ByteArray) {
+    fun searchOnLens(requestId: String, png: ByteArray, sourceUrl: String?) {
         try {
             val dir = File(cacheDir, "lens").apply { mkdirs() }
             dir.listFiles()?.forEach { it.delete() }
@@ -351,8 +363,8 @@ class MainActivity : ComponentActivity() {
                 .putExtra(Intent.EXTRA_STREAM, uri)
                 .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             send.clipData = android.content.ClipData.newRawUri("", uri)
-            clipboardBaseline = clipboardText()
-            lensStartedAt = System.currentTimeMillis()
+            val shot = sourceUrl?.let { ScreenshotCleaner.lookup(this, it.substringAfterLast('/')) }
+            ScreenshotCleaner.startLens(this, shot, clipboardText())
             var via = "lens"
             val launched = LENS_APPS.any { pkg ->
                 try {
@@ -368,7 +380,6 @@ class MainActivity : ComponentActivity() {
             }
             bridge.ok(requestId, JSONObject().put("via", via))
         } catch (e: Exception) {
-            lensStartedAt = 0L
             bridge.fail(requestId, e)
         }
     }
@@ -384,16 +395,19 @@ class MainActivity : ComponentActivity() {
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         // Android only lets the focused app read the clipboard, so check here, and only after a Lens search.
-        if (!hasFocus || lensStartedAt == 0L || !::webView.isInitialized) return
-        if (System.currentTimeMillis() - lensStartedAt > LENS_WINDOW_MS) {
-            lensStartedAt = 0L
-            return
-        }
+        if (!hasFocus || !::webView.isInitialized || !ScreenshotCleaner.lensActive(this)) return
         val text = clipboardText() ?: return
-        if (text == clipboardBaseline) return
-        clipboardBaseline = text
-        val link = MediaFetcher.firstUrl(text) ?: return
-        webView.evaluateJavascript("window.onClipboardLink && window.onClipboardLink(${JSONObject.quote(link)})", null)
+        if (!ScreenshotCleaner.isNewClipboard(this, text)) return
+        pendingClipboardLink = MediaFetcher.firstUrl(text) ?: return
+        // If the page is still loading (Stix was restarted), it picks the link up on startup instead.
+        webView.evaluateJavascript("window.onClipboardLink && window.onClipboardLink()", null)
+    }
+
+    /** Hands a link copied during a Lens search to the editor once. */
+    fun takeClipboardLink(): String? {
+        val link = pendingClipboardLink
+        pendingClipboardLink = null
+        return link
     }
 
     /** Sets up prompt-free cleanup: photo access, then the "Media management" switch. Asked once. */
@@ -419,30 +433,26 @@ class MainActivity : ComponentActivity() {
     fun cleanupShared(requestId: String, url: String, allowPrompt: Boolean) {
         fun reply(status: String) = bridge.ok(requestId, JSONObject().put("status", status))
         val mode = ScreenshotCleaner.mode(this)
-        val source = sharedSources[url.substringAfterLast('/')]
-        if (mode == ScreenshotCleaner.KEEP) return reply("kept")
-        if (source == null || Build.VERSION.SDK_INT < 30) return reply("skipped")
+        val shot = ScreenshotCleaner.lookup(this, url.substringAfterLast('/'))
+            ?: return reply("skipped")
+        if (mode == ScreenshotCleaner.KEEP) {
+            ScreenshotCleaner.forget(this, shot)
+            return reply("kept")
+        }
+        if (Build.VERSION.SDK_INT < 30) return reply("skipped")
         val silent = ScreenshotCleaner.hasSilentAccess(this)
         if (!silent && !allowPrompt && !ScreenshotCleaner.setupOffered(this)) return reply("setup")
-        bridge.runInBackground {
-            val target = try {
-                ScreenshotCleaner.findScreenshot(this, source)
-            } catch (e: Exception) {
-                Log.w(TAG, "Couldn't find the shared screenshot", e)
-                null
-            }
-            runOnUiThread {
-                if (target == null) return@runOnUiThread reply("skipped")
-                try {
-                    pendingCleanupRequest = requestId
-                    pendingCleanupMode = mode
-                    cleanupLauncher.launch(IntentSenderRequest.Builder(ScreenshotCleaner.request(this, target, mode)).build())
-                    sharedSources.remove(url.substringAfterLast('/'))
-                } catch (e: Exception) {
-                    pendingCleanupRequest = null
-                    bridge.fail(requestId, e)
-                }
-            }
+        try {
+            pendingCleanupRequest = requestId
+            pendingCleanupMode = mode
+            cleanupLauncher.launch(IntentSenderRequest.Builder(ScreenshotCleaner.request(this, shot, mode)).build())
+            ScreenshotCleaner.forget(this, shot)
+        } catch (e: Exception) {
+            // Most likely the screenshot was already deleted by hand.
+            Log.w(TAG, "Couldn't clean up $shot", e)
+            pendingCleanupRequest = null
+            ScreenshotCleaner.forget(this, shot)
+            reply("skipped")
         }
     }
 
@@ -528,7 +538,6 @@ class MainActivity : ComponentActivity() {
     companion object {
         private const val TAG = "Stix"
         private const val APP_HOST = "appassets.androidplatform.net"
-        private const val LENS_WINDOW_MS = 20 * 60 * 1000L
         /** Google app (hosts Lens for shared images), then the standalone Lens app. */
         private val LENS_APPS = listOf("com.google.android.googlequicksearchbox", "com.google.ar.lens")
         private const val START_URL = "https://$APP_HOST/assets/web/index.html"
